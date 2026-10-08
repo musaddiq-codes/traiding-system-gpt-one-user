@@ -45,6 +45,7 @@ export interface Position {
 
 export interface Trade {
   id: string;
+  strategyId?: string;
   symbol: string;
   side: OrderSide;
   quantity: number;
@@ -74,6 +75,8 @@ export interface Strategy {
   positionSize: number;
   riskPerTrade: number;
   maxPositions: number;
+  paperApprovedBacktestId?: string;
+  paperApprovedAt?: string;
 
   createdAt: string;
   updatedAt: string;

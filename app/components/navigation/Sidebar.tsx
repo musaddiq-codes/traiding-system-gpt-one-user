@@ -32,6 +32,11 @@ const navigation = [
         href: "/strategies",
         icon: "⌁",
       },
+      {
+        name: "Backtest",
+        href: "/backtest",
+        icon: "◌",
+      },
     ],
   },
   {

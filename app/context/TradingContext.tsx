@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 
@@ -18,6 +19,7 @@ import type {
   Trade,
   TradingState,
 } from "../lib/trading-types";
+import type { CandlePoint } from "../lib/market-data";
 
 import {
   calculatePositionPnl,
@@ -51,7 +53,8 @@ interface TradingContextType extends TradingState {
   ) => void;
 
   executeStrategySignal: (
-    strategyId: string
+    strategyId: string,
+    candles?: CandlePoint[]
   ) => void;
 
   closePosition: (
@@ -60,7 +63,7 @@ interface TradingContextType extends TradingState {
 
   addStrategy: (
     strategy: Strategy
-  ) => void;
+  ) => Promise<void>;
 
   updateStrategyStatus: (
     strategyId: string,
@@ -70,6 +73,12 @@ interface TradingContextType extends TradingState {
   deleteStrategy: (
     strategyId: string
   ) => void;
+
+  approveStrategyForPaper: (
+    strategyId: string,
+    backtestRunId: string,
+    reviewNotes: string
+  ) => Promise<Strategy>;
 }
 
 const TradingContext =
@@ -108,42 +117,72 @@ export function TradingProvider({
    * =========================================================
    */
 
-  const refreshMarketData = useCallback(() => {
-    setAssets((currentAssets) =>
-      currentAssets.map((asset) => {
-        let volatility = 0.005;
+  const marketRefreshRef = useRef<Promise<void> | null>(null);
 
-        if (asset.symbol === "BTC/USDT") {
-          volatility = 0.002;
-        } else if (
-          asset.symbol === "ETH/USDT"
-        ) {
-          volatility = 0.003;
+  const refreshMarketData = useCallback(async () => {
+    if (marketRefreshRef.current) {
+      return marketRefreshRef.current;
+    }
+
+    marketRefreshRef.current = (async () => {
+      try {
+        const response = await fetch("/api/market", {
+          cache: "no-store",
+        });
+
+        if (!response.ok) {
+          throw new Error("Market refresh failed");
         }
 
-        const movement =
-          (Math.random() - 0.5) *
-          volatility *
-          2;
+        const payload = await response.json();
 
-        const newPrice =
-          asset.price * (1 + movement);
+        if (Array.isArray(payload.assets) && payload.assets.length > 0) {
+          setAssets(payload.assets);
+        }
+      } catch {
+        setAssets((currentAssets) =>
+          currentAssets.map((asset) => {
+            let volatility = 0.005;
 
-        const newChange =
-          asset.change24h +
-          movement * 100;
+            if (asset.symbol === "BTC/USDT") {
+              volatility = 0.002;
+            } else if (
+              asset.symbol === "ETH/USDT"
+            ) {
+              volatility = 0.003;
+            }
 
-        return {
-          ...asset,
-          price: Number(
-            newPrice.toFixed(4)
-          ),
-          change24h: Number(
-            newChange.toFixed(2)
-          ),
-        };
-      })
-    );
+            const movement =
+              (Math.random() - 0.5) *
+              volatility *
+              2;
+
+            const newPrice =
+              asset.price * (1 + movement);
+
+            const newChange =
+              asset.change24h +
+              movement * 100;
+
+            return {
+              ...asset,
+              price: Number(
+                newPrice.toFixed(4)
+              ),
+              change24h: Number(
+                newChange.toFixed(2)
+              ),
+            };
+          })
+        );
+      }
+    })();
+
+    try {
+      await marketRefreshRef.current;
+    } finally {
+      marketRefreshRef.current = null;
+    }
   }, []);
 
   /*
@@ -262,14 +301,165 @@ export function TradingProvider({
    */
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      refreshMarketData();
-    }, 3000);
+    const controller = new AbortController();
+
+    async function loadInitialData() {
+      try {
+        const [marketResponse, strategyResponse] = await Promise.all([
+          fetch("/api/market", {
+            signal: controller.signal,
+          }),
+          fetch("/api/strategies", {
+            signal: controller.signal,
+          }),
+        ]);
+
+        if (!controller.signal.aborted) {
+          const [marketData, strategyData] = await Promise.all([
+            marketResponse.ok
+              ? marketResponse.json()
+              : { assets: mockAssets },
+            strategyResponse.ok
+              ? strategyResponse.json()
+              : { strategies: mockStrategies },
+          ]);
+
+          if (Array.isArray(marketData.assets) && marketData.assets.length > 0) {
+            setAssets(marketData.assets);
+          }
+
+          if (Array.isArray(strategyData.strategies) && strategyData.strategies.length > 0) {
+            setStrategies(strategyData.strategies);
+          }
+        }
+      } catch {
+        // Fall back to mock data when API is unavailable.
+      }
+    }
+
+    loadInitialData();
 
     return () => {
-      clearInterval(interval);
+      controller.abort();
     };
-  }, [refreshMarketData]);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const streams = [
+      "btcusdt@miniTicker",
+      "ethusdt@miniTicker",
+      "solusdt@miniTicker",
+      "bnbusdt@miniTicker",
+      "xrpusdt@miniTicker",
+    ];
+
+    let socket: WebSocket | null = null;
+    let reconnectTimer: number | undefined;
+
+    const connect = () => {
+      try {
+        socket = new WebSocket(
+          `wss://stream.binance.com:9443/stream?streams=${streams.join("/")}`
+        );
+
+        socket.onopen = () => {
+          console.log("Binance websocket connected");
+        };
+
+        socket.onmessage = (event) => {
+          try {
+            const payload = JSON.parse(event.data) as {
+              data?: {
+                s?: string;
+                c?: string;
+                P?: string;
+                h?: string;
+                l?: string;
+                q?: string;
+              };
+            };
+
+            const ticker = payload?.data;
+            const symbol = ticker?.s;
+
+            if (!symbol) {
+              return;
+            }
+
+            const normalizedSymbol = `${symbol.slice(0, -4)}/USDT`;
+            const price = Number(ticker.c ?? 0);
+            const change24h = Number(ticker.P ?? 0);
+            const high24h = Number(ticker.h ?? 0);
+            const low24h = Number(ticker.l ?? 0);
+            const volume24h = Number(ticker.q ?? 0);
+
+            setAssets((currentAssets) =>
+              currentAssets.map((asset) => {
+                if (asset.symbol !== normalizedSymbol) {
+                  return asset;
+                }
+
+                return {
+                  ...asset,
+                  price: Number(price.toFixed(4)),
+                  change24h: Number(change24h.toFixed(2)),
+                  high24h: Number(high24h.toFixed(4)),
+                  low24h: Number(low24h.toFixed(4)),
+                  volume24h: Number(volume24h.toFixed(2)),
+                };
+              })
+            );
+          } catch {
+            // Ignore malformed websocket payloads.
+          }
+        };
+
+        socket.onerror = () => {
+          if (reconnectTimer) {
+            window.clearTimeout(reconnectTimer);
+          }
+
+          reconnectTimer = window.setTimeout(() => {
+            connect();
+          }, 5000);
+        };
+
+        socket.onclose = () => {
+          if (reconnectTimer) {
+            window.clearTimeout(reconnectTimer);
+          }
+
+          reconnectTimer = window.setTimeout(() => {
+            connect();
+          }, 5000);
+        };
+      } catch {
+        if (reconnectTimer) {
+          window.clearTimeout(reconnectTimer);
+        }
+
+        reconnectTimer = window.setTimeout(() => {
+          connect();
+        }, 5000);
+      }
+    };
+
+    connect();
+
+    return () => {
+      if (reconnectTimer) {
+        window.clearTimeout(reconnectTimer);
+      }
+
+      if (socket) {
+        socket.close();
+      }
+    };
+  }, []);
 
   /*
    * =========================================================
@@ -454,7 +644,7 @@ export function TradingProvider({
    */
 
   const executeStrategySignal = useCallback(
-    (strategyId: string) => {
+    (strategyId: string, candles?: CandlePoint[]) => {
       console.log(
         "Executing strategy:",
         strategyId
@@ -503,7 +693,8 @@ export function TradingProvider({
       const evaluation =
         evaluateStrategy(
           strategy,
-          asset
+          asset,
+          candles
         );
 
       console.log(
@@ -758,14 +949,33 @@ export function TradingProvider({
    * =========================================================
    */
 
+  const persistStrategy = useCallback(
+    async (strategy: Strategy) => {
+      const response = await fetch("/api/strategies", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(strategy),
+      });
+
+      if (!response.ok) {
+        const payload = await response.json();
+        throw new Error(payload.error ?? "Unable to save strategy.");
+      }
+    },
+    []
+  );
+
   const addStrategy = useCallback(
-    (strategy: Strategy) => {
+    async (strategy: Strategy) => {
+      await persistStrategy(strategy);
       setStrategies((current) => [
         strategy,
         ...current,
       ]);
     },
-    []
+    [persistStrategy]
   );
 
   const updateStrategyStatus =
@@ -774,20 +984,50 @@ export function TradingProvider({
         strategyId: string,
         status: Strategy["status"]
       ) => {
-        setStrategies((current) =>
-          current.map((strategy) =>
-            strategy.id === strategyId
-              ? {
-                  ...strategy,
-                  status,
-                  updatedAt:
-                    new Date().toISOString(),
-                }
-              : strategy
-          )
+        const selectedStrategy = strategies.find(
+          (strategy) => strategy.id === strategyId
         );
+
+        if (
+          status === "ACTIVE" &&
+          !selectedStrategy?.paperApprovedBacktestId
+        ) {
+          console.warn(
+            "Run and approve an eligible backtest before activating paper trading."
+          );
+          return;
+        }
+
+        let updatedStrategy: Strategy | null = null;
+
+        setStrategies((current) =>
+          current.map((strategy) => {
+            if (strategy.id !== strategyId) {
+              return strategy;
+            }
+
+            updatedStrategy = {
+              ...strategy,
+              status,
+              updatedAt:
+                new Date().toISOString(),
+            };
+
+            return updatedStrategy;
+          })
+        );
+
+        if (updatedStrategy) {
+          void fetch("/api/strategies", {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(updatedStrategy),
+          });
+        }
       },
-      []
+      [strategies]
     );
 
   const deleteStrategy = useCallback(
@@ -798,6 +1038,51 @@ export function TradingProvider({
             strategy.id !== strategyId
         )
       );
+
+      void fetch(`/api/strategies?id=${encodeURIComponent(strategyId)}`, {
+        method: "DELETE",
+      });
+    },
+    []
+  );
+
+  const approveStrategyForPaper = useCallback(
+    async (
+      strategyId: string,
+      backtestRunId: string,
+      reviewNotes: string
+    ) => {
+      const response = await fetch("/api/backtest/review", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          runId: backtestRunId,
+          confirmPaperApproval: true,
+          notes: reviewNotes,
+        }),
+      });
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Strategy review failed.");
+      }
+
+      const approvedStrategy = payload.strategy as Strategy;
+
+      if (approvedStrategy.id !== strategyId) {
+        throw new Error("Approved strategy did not match the selected strategy.");
+      }
+
+      setStrategies((current) =>
+        current.map((strategy) =>
+          strategy.id === strategyId
+            ? approvedStrategy
+            : strategy
+        )
+      );
+      return approvedStrategy;
     },
     []
   );
@@ -837,6 +1122,8 @@ export function TradingProvider({
       updateStrategyStatus,
 
       deleteStrategy,
+
+      approveStrategyForPaper,
     }),
     [
       account,
@@ -852,6 +1139,8 @@ export function TradingProvider({
       addStrategy,
       updateStrategyStatus,
       deleteStrategy,
+
+      approveStrategyForPaper,
     ]
   );
 

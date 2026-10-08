@@ -72,6 +72,15 @@ export default function StrategiesPage() {
                       <div className="mt-1 text-[10px] text-slate-600">
                         {strategy.type}
                       </div>
+                      <div className={`mt-2 text-[10px] ${
+                        strategy.paperApprovedBacktestId
+                          ? "text-emerald-400"
+                          : "text-amber-400"
+                      }`}>
+                        {strategy.paperApprovedBacktestId
+                          ? "Paper-approved backtest"
+                          : "Backtest approval required"}
+                      </div>
                     </div>
 
                     <span
@@ -128,21 +137,38 @@ export default function StrategiesPage() {
                         Open
                       </Link>
 
-                      <button
-                        onClick={() =>
-                          updateStrategyStatus(
-                            strategy.id,
-                            strategy.status === "ACTIVE"
-                              ? "PAUSED"
-                              : "ACTIVE"
-                          )
-                        }
-                        className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-[10px] font-semibold text-blue-400 transition hover:bg-blue-500/10"
-                      >
-                        {strategy.status === "ACTIVE"
-                          ? "Pause"
-                          : "Start"}
-                      </button>
+                      {strategy.status === "ACTIVE" ? (
+                        <button
+                          onClick={() =>
+                            updateStrategyStatus(
+                              strategy.id,
+                              "PAUSED"
+                            )
+                          }
+                          className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-[10px] font-semibold text-blue-400 transition hover:bg-blue-500/10"
+                        >
+                          Pause
+                        </button>
+                      ) : strategy.paperApprovedBacktestId ? (
+                        <button
+                          onClick={() =>
+                            updateStrategyStatus(
+                              strategy.id,
+                              "ACTIVE"
+                            )
+                          }
+                          className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-[10px] font-semibold text-blue-400 transition hover:bg-blue-500/10"
+                        >
+                          Start Paper
+                        </button>
+                      ) : (
+                        <Link
+                          href="/backtest"
+                          className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-[10px] font-semibold text-amber-400 transition hover:bg-amber-500/10"
+                        >
+                          Backtest
+                        </Link>
+                      )}
 
                       <button
                         onClick={() =>

@@ -65,16 +65,18 @@ export default function NewStrategyPage() {
     useState("1");
   const [maxPositions, setMaxPositions] =
     useState("2");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
 
-  const [saveAsActive, setSaveAsActive] =
-    useState(true);
-
-  function handleSubmit(event: FormEvent) {
+  async function handleSubmit(event: FormEvent) {
     event.preventDefault();
 
     if (!name.trim()) {
       return;
     }
+
+    setSaving(true);
+    setError("");
 
     const now = new Date().toISOString();
 
@@ -87,9 +89,7 @@ export default function NewStrategyPage() {
       type,
       symbol,
       timeframe,
-      status: saveAsActive
-        ? "ACTIVE"
-        : "DRAFT",
+      status: "DRAFT",
       entryCondition:
         entryCondition.trim() ||
         "Custom entry condition.",
@@ -108,9 +108,18 @@ export default function NewStrategyPage() {
       updatedAt: now,
     };
 
-    addStrategy(strategy);
-
-    router.push("/strategies");
+    try {
+      await addStrategy(strategy);
+      router.push("/strategies");
+    } catch (saveError) {
+      setError(
+        saveError instanceof Error
+          ? saveError.message
+          : "Unable to save strategy."
+      );
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -143,6 +152,12 @@ export default function NewStrategyPage() {
               onSubmit={handleSubmit}
               className="space-y-6"
             >
+              {error && (
+                <div className="rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-300">
+                  {error}
+                </div>
+              )}
+
               <section className="trading-panel rounded-2xl p-6">
                 <h2 className="mb-5 text-lg font-semibold">
                   Strategy Information
@@ -268,39 +283,11 @@ export default function NewStrategyPage() {
               </section>
 
               <section className="trading-panel rounded-2xl p-6">
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <h2 className="font-semibold">
-                      Activate Strategy
-                    </h2>
-
-                    <p className="mt-1 text-sm text-slate-400">
-                      Start the strategy immediately in paper mode.
-                    </p>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setSaveAsActive(
-                        !saveAsActive
-                      )
-                    }
-                    className={`relative h-7 w-12 rounded-full transition ${
-                      saveAsActive
-                        ? "bg-blue-500"
-                        : "bg-slate-700"
-                    }`}
-                  >
-                    <span
-                      className={`absolute top-1 h-5 w-5 rounded-full bg-white transition ${
-                        saveAsActive
-                          ? "left-6"
-                          : "left-1"
-                      }`}
-                    />
-                  </button>
-                </div>
+                <h2 className="font-semibold">Strategy review required</h2>
+                <p className="mt-1 text-sm text-slate-400">
+                  New strategies are saved as drafts. Run a realistic backtest and
+                  manually approve an eligible result before paper trading.
+                </p>
               </section>
 
               <div className="flex justify-end gap-3">
@@ -313,9 +300,10 @@ export default function NewStrategyPage() {
 
                 <button
                   type="submit"
-                  className="rounded-xl bg-blue-500 px-6 py-3 text-sm font-semibold text-white transition hover:bg-blue-400"
+                  disabled={saving}
+                  className="rounded-xl bg-blue-500 px-6 py-3 text-sm font-semibold text-white transition hover:bg-blue-400 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  Create Strategy
+                  {saving ? "Saving Strategy..." : "Create Strategy"}
                 </button>
               </div>
             </form>

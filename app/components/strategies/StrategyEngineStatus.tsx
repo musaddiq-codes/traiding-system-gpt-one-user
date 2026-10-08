@@ -1,12 +1,32 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { useTrading } from "../../context/TradingContext";
+import {
+  isChartRange,
+  mapTimeRangeToInterval,
+  type CandlePoint,
+  type ChartRange,
+} from "../../lib/market-data";
+import { subscribeToKline } from "../../lib/market-data-stream";
 import {
   evaluateStrategy,
   StrategySignal,
 } from "../../lib/trading-utils";
+
+function getCandleKey(symbol: string, timeframe: string): string {
+  return `${symbol}:${timeframe}`;
+}
+
+interface StrategyEvaluationStatus {
+  strategyId: string;
+  strategyName: string;
+  symbol: string;
+  signal: StrategySignal;
+  reason: string;
+  waitingForCandles: boolean;
+}
 
 export default function StrategyEngineStatus() {
   const {
@@ -15,7 +35,97 @@ export default function StrategyEngineStatus() {
     executeStrategySignal,
   } = useTrading();
 
-  const evaluations = useMemo(() => {
+  const [candlesByStrategyMarket, setCandlesByStrategyMarket] =
+    useState<Record<string, CandlePoint[]>>({});
+
+  useEffect(() => {
+    const activeStrategies = strategies.filter(
+      (strategy) => strategy.status === "ACTIVE"
+    );
+    const uniqueMarkets = new Map<string, { symbol: string; timeframe: string }>();
+
+    for (const strategy of activeStrategies) {
+      const timeframe = strategy.timeframe;
+      const key = getCandleKey(strategy.symbol, timeframe);
+      uniqueMarkets.set(key, {
+        symbol: strategy.symbol,
+        timeframe,
+      });
+    }
+
+    const abortController = new AbortController();
+    const unsubscribeFunctions: Array<() => void> = [];
+    let active = true;
+
+    for (const [key, market] of uniqueMarkets) {
+      const timeframe = market.timeframe;
+
+      if (!isChartRange(timeframe)) {
+        continue;
+      }
+      const validTimeframe: ChartRange = timeframe;
+
+      async function loadMarketCandles() {
+        try {
+          const response = await fetch(
+            `/api/market?symbol=${encodeURIComponent(market.symbol)}&interval=${encodeURIComponent(mapTimeRangeToInterval(validTimeframe))}&limit=200`,
+            { cache: "no-store", signal: abortController.signal }
+          );
+
+          if (!response.ok) {
+            throw new Error(`Candle history request failed: ${response.status}`);
+          }
+
+          const payload = await response.json();
+
+          if (!Array.isArray(payload.candles) || !active) {
+            return;
+          }
+
+          const history = payload.candles as CandlePoint[];
+          setCandlesByStrategyMarket((current) => ({
+            ...current,
+            [key]: history,
+          }));
+
+          const unsubscribe = subscribeToKline(
+            market.symbol,
+            validTimeframe,
+            (candle) => {
+              setCandlesByStrategyMarket((current) => {
+                const previous = current[key] ?? [];
+                const last = previous[previous.length - 1];
+                const updated = last?.timestamp === candle.timestamp
+                  ? [...previous.slice(0, -1), candle]
+                  : [...previous, candle];
+
+                return {
+                  ...current,
+                  [key]: updated.slice(-200),
+                };
+              });
+            }
+          );
+
+          unsubscribeFunctions.push(unsubscribe);
+        } catch (error) {
+          if (!abortController.signal.aborted) {
+            console.error(`Failed to load strategy candles for ${market.symbol}:`, error);
+          }
+        }
+      }
+
+      void loadMarketCandles();
+    }
+
+    return () => {
+      active = false;
+      abortController.abort();
+      unsubscribeFunctions.forEach((unsubscribe) => unsubscribe());
+    };
+  }, [strategies]);
+
+  const evaluations = useMemo<StrategyEvaluationStatus[]>(() => {
     return strategies
       .filter(
         (strategy) =>
@@ -34,20 +144,39 @@ export default function StrategyEngineStatus() {
             symbol: strategy.symbol,
             signal: "HOLD" as StrategySignal,
             reason: "Market data unavailable.",
+            waitingForCandles: true,
+          };
+        }
+
+        const candleHistory =
+          candlesByStrategyMarket[
+            getCandleKey(strategy.symbol, strategy.timeframe)
+          ];
+
+        if (!candleHistory?.length) {
+          return {
+            strategyId: strategy.id,
+            strategyName: strategy.name,
+            symbol: strategy.symbol,
+            signal: "HOLD" as StrategySignal,
+            reason: "Waiting for historical candles and live stream.",
+            waitingForCandles: true,
           };
         }
 
         const result = evaluateStrategy(
           strategy,
-          asset
+          asset,
+          candleHistory
         );
 
         return {
           ...result,
           strategyName: strategy.name,
+          waitingForCandles: false,
         };
       });
-  }, [strategies, assets]);
+  }, [strategies, assets, candlesByStrategyMarket]);
 
   return (
     <section className="trading-panel mb-6 overflow-hidden">
@@ -61,13 +190,14 @@ export default function StrategyEngineStatus() {
 
               <span className="flex items-center gap-2 text-xs text-emerald-400">
                 <span className="live-dot" />
-                Running
+                {evaluations.some((item) => item.waitingForCandles)
+                  ? "Loading candle data"
+                  : "Running"}
               </span>
             </div>
 
             <p className="mt-1 text-xs text-zinc-500">
-              Evaluating active strategies against current
-              market data
+              Evaluating active strategies against live candles
             </p>
           </div>
 
@@ -124,7 +254,9 @@ export default function StrategyEngineStatus() {
                   </div>
 
                   <p className="mt-1 text-xs text-zinc-500">
-                    {evaluation.reason}
+                    {evaluation.waitingForCandles
+                      ? "Waiting for historical candles and live stream..."
+                      : evaluation.reason}
                   </p>
                 </div>
 
@@ -137,7 +269,7 @@ export default function StrategyEngineStatus() {
                   </span>
 
                   {/* Execution button */}
-                  {canExecute && (
+                  {canExecute && !evaluation.waitingForCandles && (
                     <button
                       type="button"
                       onClick={() => {
@@ -147,7 +279,13 @@ export default function StrategyEngineStatus() {
                         );
 
                         executeStrategySignal(
-                          evaluation.strategyId
+                          evaluation.strategyId,
+                          candlesByStrategyMarket[
+                            getCandleKey(
+                              evaluation.symbol,
+                              strategies.find((strategy) => strategy.id === evaluation.strategyId)?.timeframe ?? ""
+                            )
+                          ]
                         );
                       }}
                       className={`cursor-pointer rounded-md border px-4 py-1.5 text-xs font-semibold transition ${evaluation.signal === "BUY"

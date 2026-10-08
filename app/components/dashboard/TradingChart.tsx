@@ -1,361 +1,309 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import {
+  CandlestickSeries,
+  createChart,
+  HistogramSeries,
+  type IChartApi,
+  type IPriceLine,
+  type ISeriesApi,
+  type UTCTimestamp,
+} from "lightweight-charts";
+import { useEffect, useRef, useState } from "react";
 
 import { useTrading } from "../../context/TradingContext";
+import type { CandlePoint, ChartRange } from "../../lib/market-data";
+import { subscribeToKline } from "../../lib/market-data-stream";
 import { formatCurrency } from "../../lib/trading-utils";
 
-interface PricePoint {
-  time: string;
-  timestamp: number;
-  price: number;
-}
-
-type TimeRange = "1H" | "4H" | "1D" | "7D";
-
 const TIME_RANGES: {
-  value: TimeRange;
+  value: ChartRange;
   label: string;
 }[] = [
-  {
-    value: "1H",
-    label: "1H",
-  },
-  {
-    value: "4H",
-    label: "4H",
-  },
-  {
-    value: "1D",
-    label: "1D",
-  },
-  {
-    value: "7D",
-    label: "7D",
-  },
+  { value: "1s", label: "1s" },
+  { value: "1m", label: "1m" },
+  { value: "5m", label: "5m" },
+  { value: "15m", label: "15m" },
+  { value: "30m", label: "30m" },
+  { value: "1h", label: "1h" },
+  { value: "4h", label: "4h" },
+  { value: "1d", label: "1d" },
 ];
 
 export default function TradingChart() {
-  const {
-    assets,
-    selectedSymbol,
-    setSelectedSymbol,
-  } = useTrading();
+  const { assets, selectedSymbol, setSelectedSymbol } = useTrading();
+  const [timeRange, setTimeRange] = useState<ChartRange>("1m");
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const chartContainerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const currentPriceLineRef = useRef<IPriceLine | null>(null);
 
-  const [timeRange, setTimeRange] =
-    useState<TimeRange>("1H");
+  const selectedAsset = assets.find((asset) => asset.symbol === selectedSymbol);
+  const priceDecimals = selectedAsset && selectedAsset.price < 1 ? 4 : 2;
+  const positive = selectedAsset ? selectedAsset.change24h >= 0 : true;
 
-  const [history, setHistory] = useState<
-    Record<string, PricePoint[]>
-  >({});
-
-  const selectedAsset = assets.find(
-    (asset) =>
-      asset.symbol === selectedSymbol
-  );
-
-  /*
-   * Store simulated price history separately
-   * for every coin.
-   */
   useEffect(() => {
-    if (!selectedAsset) {
+    if (!chartContainerRef.current) {
       return;
     }
 
-    const symbol = selectedAsset.symbol;
-
-    const point: PricePoint = {
-      time: new Date().toLocaleTimeString(
-        [],
-        {
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-        }
-      ),
-      timestamp: Date.now(),
-      price: selectedAsset.price,
-    };
-
-    setHistory((current) => {
-      const previous =
-        current[symbol] ?? [];
-
-      const updated = [
-        ...previous,
-        point,
-      ];
-
-      /*
-       * Keep a larger history so the
-       * time-range selector can filter it.
-       */
-      return {
-        ...current,
-        [symbol]: updated.slice(-500),
-      };
+    const chart = createChart(chartContainerRef.current, {
+      autoSize: true,
+      layout: {
+        background: { color: "#090c11" },
+        textColor: "#71717a",
+        attributionLogo: false,
+      },
+      grid: {
+        vertLines: { color: "#18181b" },
+        horzLines: { color: "#18181b" },
+      },
+      crosshair: {
+        vertLine: { color: "#52525b", labelBackgroundColor: "#27272a" },
+        horzLine: { color: "#52525b", labelBackgroundColor: "#27272a" },
+      },
+      rightPriceScale: {
+        borderColor: "#27272a",
+        scaleMargins: { top: 0.08, bottom: 0.28 },
+      },
+      timeScale: {
+        borderColor: "#27272a",
+        timeVisible: true,
+        secondsVisible: true,
+        rightOffset: 4,
+        barSpacing: 9,
+        minBarSpacing: 4,
+      },
+      localization: {
+        priceFormatter: (price: number) =>
+          `$${formatCurrency(price, price < 1 ? 4 : 2)}`,
+      },
     });
-  }, [selectedAsset?.price]);
 
-  /*
-   * Convert the selected time range into
-   * a maximum number of simulated points.
-   *
-   * Current market simulator updates every
-   * 3 seconds.
-   */
-  const maxPoints = useMemo(() => {
-    switch (timeRange) {
-      case "1H":
-        return 60;
+    const candles = chart.addSeries(CandlestickSeries, {
+      upColor: "#22c55e",
+      downColor: "#ef4444",
+      borderUpColor: "#22c55e",
+      borderDownColor: "#ef4444",
+      wickUpColor: "#22c55e",
+      wickDownColor: "#ef4444",
+      lastValueVisible: false,
+      priceLineVisible: false,
+    });
 
-      case "4H":
-        return 120;
+    const volume = chart.addSeries(HistogramSeries, {
+      priceFormat: { type: "volume" },
+      priceScaleId: "volume",
+      lastValueVisible: false,
+      priceLineVisible: false,
+    });
 
-      case "1D":
-        return 240;
+    chart.priceScale("volume").applyOptions({
+      scaleMargins: { top: 0.78, bottom: 0 },
+      visible: false,
+    });
 
-      case "7D":
-        return 500;
+    chartRef.current = chart;
+    candleSeriesRef.current = candles;
+    volumeSeriesRef.current = volume;
 
-      default:
-        return 60;
-    }
-  }, [timeRange]);
+    return () => {
+      chart.remove();
+      chartRef.current = null;
+      candleSeriesRef.current = null;
+      volumeSeriesRef.current = null;
+      currentPriceLineRef.current = null;
+    };
+  }, []);
 
-  /*
-   * Get history belonging only to the
-   * currently selected coin.
-   */
-  const priceHistory = useMemo(() => {
-    if (!selectedAsset) {
-      return [];
-    }
-
-    const symbolHistory =
-      history[selectedAsset.symbol] ?? [];
-
-    return symbolHistory.slice(
-      -maxPoints
-    );
-  }, [
-    history,
-    selectedAsset,
-    maxPoints,
-  ]);
-
-  /*
-   * Always show the current price even
-   * before enough simulated points exist.
-   */
-  const chartData = useMemo(() => {
-    if (!selectedAsset) {
-      return [];
+  useEffect(() => {
+    if (!selectedSymbol) {
+      return;
     }
 
-    if (priceHistory.length === 0) {
-      return [
-        {
-          time: "Now",
-          timestamp: Date.now(),
-          price: selectedAsset.price,
-        },
-      ];
+    const controller = new AbortController();
+    let unsubscribe: (() => void) | null = null;
+
+    async function loadCandles() {
+      try {
+        setIsLoading(true);
+        setError(null);
+
+        const response = await fetch(
+          `/api/market?symbol=${encodeURIComponent(selectedSymbol)}&interval=${encodeURIComponent(timeRange)}&limit=120`,
+          { cache: "no-store", signal: controller.signal }
+        );
+
+        if (!response.ok) {
+          throw new Error(`Candle request failed: ${response.status}`);
+        }
+
+        const payload = await response.json();
+
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        if (!Array.isArray(payload.candles) || payload.candles.length === 0) {
+          throw new Error("The market provider returned no candles.");
+        }
+
+        const candles = payload.candles as CandlePoint[];
+        candleSeriesRef.current?.setData(
+          candles.map((candle) => ({
+            time: Math.floor(candle.timestamp / 1000) as UTCTimestamp,
+            open: candle.open,
+            high: candle.high,
+            low: candle.low,
+            close: candle.close,
+          }))
+        );
+        volumeSeriesRef.current?.setData(
+          candles.map((candle) => ({
+            time: Math.floor(candle.timestamp / 1000) as UTCTimestamp,
+            value: candle.volume,
+            color: candle.close >= candle.open
+              ? "rgba(34, 197, 94, 0.35)"
+              : "rgba(239, 68, 68, 0.35)",
+          }))
+        );
+        chartRef.current?.timeScale().fitContent();
+
+        unsubscribe = subscribeToKline(
+          selectedSymbol,
+          timeRange,
+          (candle) => {
+            candleSeriesRef.current?.update({
+              time: Math.floor(candle.timestamp / 1000) as UTCTimestamp,
+              open: candle.open,
+              high: candle.high,
+              low: candle.low,
+              close: candle.close,
+            });
+            volumeSeriesRef.current?.update({
+              time: Math.floor(candle.timestamp / 1000) as UTCTimestamp,
+              value: candle.volume,
+              color: candle.close >= candle.open
+                ? "rgba(34, 197, 94, 0.35)"
+                : "rgba(239, 68, 68, 0.35)",
+            });
+          }
+        );
+      } catch (cause) {
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        setError(
+          cause instanceof Error
+            ? cause.message
+            : "Unable to load candle data."
+        );
+      } finally {
+        if (!controller.signal.aborted) {
+          setIsLoading(false);
+        }
+      }
     }
 
-    return priceHistory;
-  }, [
-    priceHistory,
-    selectedAsset,
-  ]);
+    void loadCandles();
 
-  const prices = chartData.map(
-    (point) => point.price
-  );
+    return () => {
+      controller.abort();
+      unsubscribe?.();
+    };
+  }, [selectedSymbol, timeRange]);
 
-  const minPrice =
-    prices.length > 0
-      ? Math.min(...prices)
-      : 0;
-
-  const maxPrice =
-    prices.length > 0
-      ? Math.max(...prices)
-      : 0;
-
-  /*
-   * Give the chart some vertical breathing room.
-   */
-  const range =
-    maxPrice - minPrice;
-
-  const padding =
-    range === 0
-      ? maxPrice * 0.002
-      : range * 0.15;
-
-  const chartMin = Math.max(
-    0,
-    minPrice - padding
-  );
-
-  const chartMax =
-    maxPrice + padding;
-
-  const chartRange =
-    chartMax - chartMin;
-
-  const getX = (index: number) => {
-    if (chartData.length <= 1) {
-      return 50;
+  useEffect(() => {
+    if (!candleSeriesRef.current || !selectedAsset) {
+      return;
     }
 
-    return (
-      5 +
-      (index /
-        (chartData.length - 1)) *
-        90
-    );
-  };
-
-  const getY = (price: number) => {
-    if (chartRange === 0) {
-      return 50;
+    if (currentPriceLineRef.current) {
+      currentPriceLineRef.current.applyOptions({
+        price: selectedAsset.price,
+        color: positive ? "#22c55e" : "#ef4444",
+      });
+      return;
     }
 
-    return (
-      90 -
-      ((price - chartMin) /
-        chartRange) *
-        80
-    );
-  };
+    currentPriceLineRef.current =
+      candleSeriesRef.current.createPriceLine({
+        price: selectedAsset.price,
+        color: positive ? "#22c55e" : "#ef4444",
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: "MARK",
+      });
+  }, [selectedAsset, positive]);
 
-  const points = chartData
-    .map(
-      (point, index) =>
-        `${getX(index)},${getY(
-          point.price
-        )}`
-    )
-    .join(" ");
-
-  const positive =
-    selectedAsset
-      ? selectedAsset.change24h >= 0
-      : true;
-
-  const priceDecimals =
-    selectedAsset &&
-    selectedAsset.price < 1
-      ? 4
-      : 2;
+  const currentPrice = selectedAsset?.price ?? 0;
 
   return (
     <section className="trading-panel overflow-hidden">
-      {/* ============================= */}
-      {/* HEADER                         */}
-      {/* ============================= */}
-
       <div className="border-b border-zinc-800 px-5 py-4">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          {/* Title */}
           <div>
             <div className="flex items-center gap-3">
-              <h2 className="font-medium text-white">
-                Price Chart
-              </h2>
-
+              <h2 className="font-medium text-white">Price Chart</h2>
               <span className="flex items-center gap-2 text-xs text-zinc-500">
                 <span className="live-dot" />
-                Live
+                {isLoading ? "Updating" : "Live"}
               </span>
             </div>
 
             {selectedAsset && (
               <div className="mt-2 flex flex-wrap items-center gap-3">
-                <span className="font-medium text-zinc-300">
-                  {selectedAsset.symbol}
-                </span>
-
+                <span className="font-medium text-zinc-300">{selectedAsset.symbol}</span>
                 <span className="number text-xl font-semibold text-white">
-                  $
-                  {formatCurrency(
-                    selectedAsset.price,
-                    priceDecimals
-                  )}
+                  ${formatCurrency(currentPrice, priceDecimals)}
                 </span>
-
                 <span
                   className={`number text-sm ${
-                    positive
-                      ? "text-emerald-400"
-                      : "text-red-400"
+                    positive ? "text-emerald-400" : "text-red-400"
                   }`}
                 >
                   {positive ? "+" : ""}
-                  {selectedAsset.change24h.toFixed(
-                    2
-                  )}
-                  %
+                  {selectedAsset.change24h.toFixed(2)}%
                 </span>
               </div>
             )}
           </div>
 
-          {/* ============================= */}
-          {/* CONTROLS                      */}
-          {/* ============================= */}
-
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            {/* Time Range */}
-            <div className="flex items-center rounded-lg border border-zinc-800 bg-zinc-950 p-1">
-              {TIME_RANGES.map(
-                (rangeOption) => {
-                  const active =
-                    timeRange ===
-                    rangeOption.value;
+            <div className="flex max-w-full items-center gap-0.5 overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-950 p-1">
+              {TIME_RANGES.map((rangeOption) => {
+                const active = timeRange === rangeOption.value;
 
-                  return (
-                    <button
-                      key={
-                        rangeOption.value
-                      }
-                      type="button"
-                      onClick={() =>
-                        setTimeRange(
-                          rangeOption.value
-                        )
-                      }
-                      className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
-                        active
-                          ? "bg-zinc-700 text-white"
-                          : "text-zinc-500 hover:bg-zinc-900 hover:text-zinc-300"
-                      }`}
-                    >
-                      {rangeOption.label}
-                    </button>
-                  );
-                }
-              )}
+                return (
+                  <button
+                    key={rangeOption.value}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => setTimeRange(rangeOption.value)}
+                    className={`shrink-0 rounded-md px-2.5 py-1.5 text-xs font-medium transition ${
+                      active
+                        ? "bg-zinc-700 text-white"
+                        : "text-zinc-500 hover:bg-zinc-900 hover:text-zinc-300"
+                    }`}
+                  >
+                    {rangeOption.label}
+                  </button>
+                );
+              })}
             </div>
 
-            {/* Coin Selection */}
             <select
               value={selectedSymbol}
-              onChange={(event) =>
-                setSelectedSymbol(
-                  event.target.value
-                )
-              }
+              onChange={(event) => setSelectedSymbol(event.target.value)}
               className="min-w-[155px] cursor-pointer rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-white outline-none transition hover:border-zinc-500 focus:border-zinc-400"
             >
               {assets.map((asset) => (
-                <option
-                  key={asset.symbol}
-                  value={asset.symbol}
-                >
+                <option key={asset.symbol} value={asset.symbol}>
                   {asset.symbol}
                 </option>
               ))}
@@ -364,220 +312,57 @@ export default function TradingChart() {
         </div>
       </div>
 
-      {/* ============================= */}
-      {/* CHART                          */}
-      {/* ============================= */}
-
       <div className="p-5">
-        <div className="relative h-[340px] w-full overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950">
-          {/* Grid */}
-          <div className="pointer-events-none absolute inset-0">
-            <div className="absolute left-0 right-0 top-[20%] border-t border-zinc-900" />
+        <div className="relative h-[380px] w-full overflow-hidden rounded-lg border border-zinc-800 bg-[#090c11]">
+          <div ref={chartContainerRef} className="h-full w-full" />
 
-            <div className="absolute left-0 right-0 top-[40%] border-t border-zinc-900" />
-
-            <div className="absolute left-0 right-0 top-[60%] border-t border-zinc-900" />
-
-            <div className="absolute left-0 right-0 top-[80%] border-t border-zinc-900" />
-          </div>
-
-          {/* Y Axis */}
-          {selectedAsset && (
-            <div className="pointer-events-none absolute right-3 top-3 bottom-8 flex flex-col justify-between text-[10px] text-zinc-600">
-              <span>
-                $
-                {formatCurrency(
-                  chartMax,
-                  priceDecimals
-                )}
-              </span>
-
-              <span>
-                $
-                {formatCurrency(
-                  (chartMax +
-                    chartMin) /
-                    2,
-                  priceDecimals
-                )}
-              </span>
-
-              <span>
-                $
-                {formatCurrency(
-                  chartMin,
-                  priceDecimals
-                )}
-              </span>
+          {isLoading && (
+            <div className="pointer-events-none absolute left-3 top-3 rounded bg-zinc-950/80 px-2 py-1 text-xs text-zinc-300">
+              Loading candles...
             </div>
           )}
 
-          {/* Chart */}
-          {selectedAsset && (
-            <svg
-              viewBox="0 0 100 100"
-              preserveAspectRatio="none"
-              className="absolute inset-0 h-full w-full"
-            >
-              {/* Area */}
-              {chartData.length > 1 && (
-                <polygon
-                  points={`5,90 ${points} 95,90`}
-                  fill="currentColor"
-                  opacity="0.06"
-                  className={
-                    positive
-                      ? "text-emerald-400"
-                      : "text-red-400"
-                  }
-                />
-              )}
-
-              {/* Line */}
-              <polyline
-                points={points}
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="0.8"
-                vectorEffect="non-scaling-stroke"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className={
-                  positive
-                    ? "text-emerald-400"
-                    : "text-red-400"
-                }
-              />
-
-              {/* Current Price */}
-              {chartData.length > 0 && (
-                <circle
-                  cx={getX(
-                    chartData.length - 1
-                  )}
-                  cy={getY(
-                    chartData[
-                      chartData.length - 1
-                    ].price
-                  )}
-                  r="1.2"
-                  fill="currentColor"
-                  className={
-                    positive
-                      ? "text-emerald-400"
-                      : "text-red-400"
-                  }
-                />
-              )}
-            </svg>
-          )}
-
-          {!selectedAsset && (
-            <div className="absolute inset-0 flex items-center justify-center text-sm text-zinc-500">
-              Select a market.
-            </div>
-          )}
-
-          {/* Time labels */}
-          {chartData.length > 0 && (
-            <div className="absolute bottom-2 left-3 right-3 flex justify-between text-[10px] text-zinc-600">
-              <span>
-                {chartData[0].time}
-              </span>
-
-              <span>
-                {
-                  chartData[
-                    chartData.length - 1
-                  ].time
-                }
-              </span>
+          {!isLoading && error && (
+            <div className="absolute inset-0 flex items-center justify-center bg-zinc-950/80 px-4 text-center text-xs text-red-400">
+              {error}
             </div>
           )}
         </div>
 
-        {/* ============================= */}
-        {/* STATISTICS                     */}
-        {/* ============================= */}
-
         {selectedAsset && (
           <div className="mt-4 grid grid-cols-2 gap-4 md:grid-cols-5">
             <div>
-              <div className="text-xs text-zinc-500">
-                Current
-              </div>
-
+              <div className="text-xs text-zinc-500">Current</div>
               <div className="number mt-1 text-sm text-white">
-                $
-                {formatCurrency(
-                  selectedAsset.price,
-                  priceDecimals
-                )}
+                ${formatCurrency(currentPrice, priceDecimals)}
               </div>
             </div>
 
             <div>
-              <div className="text-xs text-zinc-500">
-                24h High
-              </div>
-
+              <div className="text-xs text-zinc-500">24h High</div>
               <div className="number mt-1 text-sm text-zinc-300">
-                $
-                {formatCurrency(
-                  selectedAsset.high24h,
-                  selectedAsset.high24h <
-                    1
-                    ? 4
-                    : 2
-                )}
+                ${formatCurrency(selectedAsset.high24h, selectedAsset.high24h < 1 ? 4 : 2)}
               </div>
             </div>
 
             <div>
-              <div className="text-xs text-zinc-500">
-                24h Low
-              </div>
-
+              <div className="text-xs text-zinc-500">24h Low</div>
               <div className="number mt-1 text-sm text-zinc-300">
-                $
-                {formatCurrency(
-                  selectedAsset.low24h,
-                  selectedAsset.low24h <
-                    1
-                    ? 4
-                    : 2
-                )}
+                ${formatCurrency(selectedAsset.low24h, selectedAsset.low24h < 1 ? 4 : 2)}
               </div>
             </div>
 
             <div>
-              <div className="text-xs text-zinc-500">
-                24h Change
-              </div>
-
-              <div
-                className={`number mt-1 text-sm ${
-                  positive
-                    ? "text-emerald-400"
-                    : "text-red-400"
-                }`}
-              >
+              <div className="text-xs text-zinc-500">24h Change</div>
+              <div className={`number mt-1 text-sm ${positive ? "text-emerald-400" : "text-red-400"}`}>
                 {positive ? "+" : ""}
-                {selectedAsset.change24h.toFixed(
-                  2
-                )}
-                %
+                {selectedAsset.change24h.toFixed(2)}%
               </div>
             </div>
 
             <div>
-              <div className="text-xs text-zinc-500">
-                Range
-              </div>
-
-              <div className="number mt-1 text-sm text-zinc-300">
-                {timeRange}
-              </div>
+              <div className="text-xs text-zinc-500">Range</div>
+              <div className="number mt-1 text-sm text-zinc-300">{timeRange}</div>
             </div>
           </div>
         )}

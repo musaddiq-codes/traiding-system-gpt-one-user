@@ -4,6 +4,11 @@ import type {
   Side,
   Strategy,
 } from "./trading-types";
+import type { CandlePoint } from "./market-data";
+
+import {
+  evaluateCustomStrategy,
+} from "./strategy-engine";
 
 export type StrategySignal =
   | "BUY"
@@ -147,8 +152,24 @@ export function isPositive(
 
 export function evaluateStrategy(
   strategy: Strategy,
-  asset: Asset
+  asset: Asset,
+  candles?: CandlePoint[]
 ): StrategyEvaluation {
+  const customDecision = evaluateCustomStrategy(
+    strategy,
+    asset,
+    candles
+  );
+
+  if (customDecision.signal !== "HOLD") {
+    return {
+      strategyId: customDecision.strategyId,
+      symbol: customDecision.symbol,
+      signal: customDecision.signal,
+      reason: customDecision.reason,
+    };
+  }
+
   if (strategy.status !== "ACTIVE") {
     return {
       strategyId: strategy.id,
@@ -171,23 +192,6 @@ export function evaluateStrategy(
         "Market does not match strategy.",
     };
   }
-
-  /*
-   * First simple signal model:
-   *
-   * Positive 24h momentum
-   *     -> BUY
-   *
-   * Negative 24h momentum
-   *     -> SELL
-   *
-   * Near zero movement
-   *     -> HOLD
-   *
-   * This is only a temporary engine.
-   * Real strategies will use OHLCV candles and
-   * technical indicators.
-   */
 
   if (asset.change24h > 1) {
     return {

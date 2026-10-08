@@ -204,7 +204,7 @@ export default function StrategyForm({
     return null;
   };
 
-  const handleSubmit = (
+  const handleSubmit = async (
     event: FormEvent<HTMLFormElement>
   ) => {
     event.preventDefault();
@@ -270,13 +270,21 @@ export default function StrategyForm({
       updatedAt: now,
     };
 
-    if (!initialStrategy) {
-      addStrategy(strategy);
+    try {
+      if (!initialStrategy) {
+        await addStrategy(strategy);
+      }
+
+      onSuccess?.();
+    } catch (saveError) {
+      setError(
+        saveError instanceof Error
+          ? saveError.message
+          : "Unable to save strategy."
+      );
+    } finally {
+      setIsSubmitting(false);
     }
-
-    setIsSubmitting(false);
-
-    onSuccess?.();
   };
 
   return (
