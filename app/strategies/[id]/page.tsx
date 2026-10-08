@@ -1,6 +1,8 @@
 import Link from "next/link";
+import { notFound } from "next/navigation";
 import Sidebar from "../../components/navigation/Sidebar";
 import Header from "../../components/navigation/Header";
+import type { Strategy } from "../../lib/trading-types";
 
 export default async function StrategyPage({
   params,
@@ -8,15 +10,21 @@ export default async function StrategyPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-
-  const strategyName =
-    id === "momentum-ai"
-      ? "Momentum AI"
-      : id === "trend-rider"
-        ? "Trend Rider"
-        : id === "mean-reversion"
-          ? "Mean Reversion"
-          : "New Strategy";
+  const backendUrl = (
+    process.env.BACKEND_URL ?? "http://127.0.0.1:8000"
+  ).replace(/\/$/, "");
+  const response = await fetch(
+    `${backendUrl}/api/strategies/${encodeURIComponent(id)}`,
+    { cache: "no-store" }
+  );
+  if (response.status === 404) {
+    notFound();
+  }
+  if (!response.ok) {
+    throw new Error(`Unable to load strategy from backend (${response.status}).`);
+  }
+  const payload = await response.json() as { strategy: Strategy };
+  const strategy = payload.strategy;
 
   return (
     <div className="min-h-screen bg-[#07090d] text-white">
@@ -40,7 +48,7 @@ export default async function StrategyPage({
               </p>
 
               <h1 className="text-2xl font-bold tracking-tight">
-                {strategyName}
+                {strategy.name}
               </h1>
 
               <p className="mt-1 text-xs text-slate-600">
@@ -69,12 +77,14 @@ export default async function StrategyPage({
                 </div>
 
                 <div className="grid gap-5 p-5 sm:grid-cols-2">
-                  <Field label="Trading Pair" value="BTC / USDT" />
-                  <Field label="Timeframe" value="15 minutes" />
-                  <Field label="Entry Threshold" value="72%" />
-                  <Field label="Position Size" value="5%" />
-                  <Field label="Stop Loss" value="2.5%" />
-                  <Field label="Take Profit" value="6%" />
+                  <Field label="Trading Pair" value={strategy.symbol} />
+                  <Field label="Timeframe" value={strategy.timeframe} />
+                  <Field label="Entry Condition" value={strategy.entryCondition} />
+                  <Field label="Exit Condition" value={strategy.exitCondition} />
+                  <Field label="Risk / Trade" value={`${strategy.riskPerTrade}%`} />
+                  <Field label="Position Size" value={strategy.positionSize.toLocaleString()} />
+                  <Field label="Stop Loss" value={`${strategy.stopLoss}%`} />
+                  <Field label="Take Profit" value={`${strategy.takeProfit}%`} />
                 </div>
               </section>
 
@@ -160,8 +170,12 @@ export default async function StrategyPage({
                     Execution engine
                   </span>
 
-                  <span className="text-xs font-semibold text-emerald-400">
-                    RUNNING
+                  <span className={`text-xs font-semibold ${
+                    strategy.status === "ACTIVE"
+                      ? "text-emerald-400"
+                      : "text-slate-500"
+                  }`}>
+                  {strategy.status}
                   </span>
                 </div>
 

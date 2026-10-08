@@ -1,7 +1,6 @@
 import type {
   Asset,
   Position,
-  Side,
   Strategy,
 } from "./trading-types";
 import type { CandlePoint } from "./market-data";

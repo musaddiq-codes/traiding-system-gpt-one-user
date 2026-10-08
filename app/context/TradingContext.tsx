@@ -20,6 +20,7 @@ import type {
   TradingState,
 } from "../lib/trading-types";
 import type { CandlePoint } from "../lib/market-data";
+import { backendApiUrl } from "../lib/api";
 
 import {
   calculatePositionPnl,
@@ -50,7 +51,7 @@ interface TradingContextType extends TradingState {
     side: Side,
     quantity: number,
     strategyId?: string
-  ) => void;
+  ) => Promise<void>;
 
   executeStrategySignal: (
     strategyId: string,
@@ -59,7 +60,7 @@ interface TradingContextType extends TradingState {
 
   closePosition: (
     positionId: string
-  ) => void;
+  ) => Promise<void>;
 
   addStrategy: (
     strategy: Strategy
@@ -68,11 +69,11 @@ interface TradingContextType extends TradingState {
   updateStrategyStatus: (
     strategyId: string,
     status: Strategy["status"]
-  ) => void;
+  ) => Promise<void>;
 
   deleteStrategy: (
     strategyId: string
-  ) => void;
+  ) => Promise<void>;
 
   approveStrategyForPaper: (
     strategyId: string,
@@ -106,10 +107,56 @@ export function TradingProvider({
   const [strategies, setStrategies] =
     useState<Strategy[]>(mockStrategies);
 
+  const applyPortfolioState = useCallback(
+    (snapshot: Pick<TradingState, "account" | "positions" | "trades">) => {
+      setAccount(snapshot.account);
+      setPositions(snapshot.positions);
+      setTrades(snapshot.trades);
+    },
+    []
+  );
+
   const [
     selectedSymbol,
     setSelectedSymbol,
   ] = useState<string>("BTC/USDT");
+
+  const currentPositions = useMemo(
+    () =>
+      positions.map((position) => {
+        const asset = assets.find((item) => item.symbol === position.symbol);
+        if (!asset) {
+          return position;
+        }
+        const updatedPosition = {
+          ...position,
+          currentPrice: asset.price,
+        };
+        return {
+          ...updatedPosition,
+          unrealizedPnl: Number(
+            calculatePositionPnl(updatedPosition).toFixed(2)
+          ),
+          unrealizedPnlPercent: Number(
+            calculatePositionPnlPercent(updatedPosition).toFixed(2)
+          ),
+        };
+      }),
+    [positions, assets]
+  );
+
+  const currentAccount = useMemo(() => {
+    const unrealizedPnl = calculateTotalUnrealizedPnl(currentPositions);
+    return {
+      ...account,
+      equity: Number((account.balance + unrealizedPnl).toFixed(2)),
+      availableBalance: Number(
+        Math.max(0, account.balance - account.usedMargin).toFixed(2)
+      ),
+      unrealizedPnl: Number(unrealizedPnl.toFixed(2)),
+      totalPnl: Number((account.realizedPnl + unrealizedPnl).toFixed(2)),
+    };
+  }, [account, currentPositions]);
 
   /*
    * =========================================================
@@ -126,12 +173,12 @@ export function TradingProvider({
 
     marketRefreshRef.current = (async () => {
       try {
-        const response = await fetch("/api/market", {
+        const response = await fetch(backendApiUrl("/api/market"), {
           cache: "no-store",
         });
 
         if (!response.ok) {
-          throw new Error("Market refresh failed");
+          throw new Error(`Market refresh failed (${response.status}).`);
         }
 
         const payload = await response.json();
@@ -139,42 +186,8 @@ export function TradingProvider({
         if (Array.isArray(payload.assets) && payload.assets.length > 0) {
           setAssets(payload.assets);
         }
-      } catch {
-        setAssets((currentAssets) =>
-          currentAssets.map((asset) => {
-            let volatility = 0.005;
-
-            if (asset.symbol === "BTC/USDT") {
-              volatility = 0.002;
-            } else if (
-              asset.symbol === "ETH/USDT"
-            ) {
-              volatility = 0.003;
-            }
-
-            const movement =
-              (Math.random() - 0.5) *
-              volatility *
-              2;
-
-            const newPrice =
-              asset.price * (1 + movement);
-
-            const newChange =
-              asset.change24h +
-              movement * 100;
-
-            return {
-              ...asset,
-              price: Number(
-                newPrice.toFixed(4)
-              ),
-              change24h: Number(
-                newChange.toFixed(2)
-              ),
-            };
-          })
-        );
+      } catch (error) {
+        console.error("Unable to refresh market data:", error);
       }
     })();
 
@@ -187,115 +200,6 @@ export function TradingProvider({
 
   /*
    * =========================================================
-   * UPDATE OPEN POSITIONS FROM MARKET PRICES
-   * =========================================================
-   */
-
-  useEffect(() => {
-    if (assets.length === 0) {
-      return;
-    }
-
-    setPositions((currentPositions) =>
-      currentPositions.map((position) => {
-        const asset = assets.find(
-          (item) =>
-            item.symbol === position.symbol
-        );
-
-        if (!asset) {
-          return position;
-        }
-
-        const updatedPosition: Position = {
-          ...position,
-          currentPrice: asset.price,
-        };
-
-        const unrealizedPnl =
-          calculatePositionPnl(
-            updatedPosition
-          );
-
-        const unrealizedPnlPercent =
-          calculatePositionPnlPercent(
-            updatedPosition
-          );
-
-        return {
-          ...updatedPosition,
-          unrealizedPnl: Number(
-            unrealizedPnl.toFixed(2)
-          ),
-          unrealizedPnlPercent: Number(
-            unrealizedPnlPercent.toFixed(2)
-          ),
-        };
-      })
-    );
-  }, [assets]);
-
-  /*
-   * =========================================================
-   * ACCOUNT CALCULATIONS
-   * =========================================================
-   *
-   * balance:
-   *   Cash balance after realized P&L.
-   *
-   * equity:
-   *   Balance + unrealized P&L.
-   *
-   * availableBalance:
-   *   Balance - used margin.
-   */
-
-  useEffect(() => {
-    const totalUnrealizedPnl =
-      calculateTotalUnrealizedPnl(
-        positions
-      );
-
-    setAccount((currentAccount) => {
-      const equity =
-        currentAccount.balance +
-        totalUnrealizedPnl;
-
-      const availableBalance =
-        currentAccount.balance -
-        currentAccount.usedMargin;
-
-      const totalPnl =
-        currentAccount.realizedPnl +
-        totalUnrealizedPnl;
-
-      return {
-        ...currentAccount,
-
-        equity: Number(
-          equity.toFixed(2)
-        ),
-
-        availableBalance: Number(
-          Math.max(
-            0,
-            availableBalance
-          ).toFixed(2)
-        ),
-
-        unrealizedPnl: Number(
-          totalUnrealizedPnl.toFixed(2)
-        ),
-
-        totalPnl: Number(
-          totalPnl.toFixed(2)
-        ),
-      };
-    });
-  }, [positions]);
-
-  /*
-   * =========================================================
    * AUTOMATIC MARKET TICK
    * =========================================================
    */
@@ -305,35 +209,55 @@ export function TradingProvider({
 
     async function loadInitialData() {
       try {
-        const [marketResponse, strategyResponse] = await Promise.all([
-          fetch("/api/market", {
+        const [marketResponse, strategyResponse, stateResponse] = await Promise.all([
+          fetch(backendApiUrl("/api/market"), {
             signal: controller.signal,
           }),
-          fetch("/api/strategies", {
+          fetch(backendApiUrl("/api/strategies"), {
+            signal: controller.signal,
+          }),
+          fetch(backendApiUrl("/api/state"), {
             signal: controller.signal,
           }),
         ]);
 
         if (!controller.signal.aborted) {
-          const [marketData, strategyData] = await Promise.all([
+          const [marketData, strategyData, portfolioState] = await Promise.all([
             marketResponse.ok
               ? marketResponse.json()
               : { assets: mockAssets },
             strategyResponse.ok
               ? strategyResponse.json()
               : { strategies: mockStrategies },
+            stateResponse.ok
+              ? stateResponse.json()
+              : {
+                  account: mockAccount,
+                  positions: mockPositions,
+                  trades: mockTrades,
+                },
           ]);
 
-          if (Array.isArray(marketData.assets) && marketData.assets.length > 0) {
+          if (Array.isArray(marketData.assets)) {
             setAssets(marketData.assets);
           }
 
-          if (Array.isArray(strategyData.strategies) && strategyData.strategies.length > 0) {
+          if (Array.isArray(strategyData.strategies)) {
             setStrategies(strategyData.strategies);
+          }
+          if (
+            portfolioState &&
+            portfolioState.account &&
+            Array.isArray(portfolioState.positions) &&
+            Array.isArray(portfolioState.trades)
+          ) {
+            applyPortfolioState(portfolioState);
           }
         }
       } catch {
-        // Fall back to mock data when API is unavailable.
+        if (!controller.signal.aborted) {
+          console.error("Unable to load initial data from the trading backend.");
+        }
       }
     }
 
@@ -342,7 +266,7 @@ export function TradingProvider({
     return () => {
       controller.abort();
     };
-  }, []);
+  }, [applyPortfolioState]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -468,173 +392,26 @@ export function TradingProvider({
    */
 
   const openPaperPosition = useCallback(
-    (
+    async (
       symbol: string,
       side: Side,
       quantity: number,
       strategyId = "manual"
     ) => {
-      if (
-        !symbol ||
-        !Number.isFinite(quantity) ||
-        quantity <= 0
-      ) {
-        console.log(
-          "Invalid paper order quantity."
+      const response = await fetch(backendApiUrl("/api/orders"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol, side, quantity, strategyId }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(
+          payload.detail ?? payload.error ?? "Unable to place paper order."
         );
-
-        return;
       }
-
-      const asset = assets.find(
-        (item) =>
-          item.symbol === symbol
-      );
-
-      if (!asset) {
-        console.log(
-          "Asset not found:",
-          symbol
-        );
-
-        return;
-      }
-
-      /*
-       * Current paper-trading version uses
-       * 1x leverage.
-       *
-       * We can add configurable leverage
-       * later when the risk engine is built.
-       */
-
-      const leverage = 1;
-
-      const positionValue =
-        asset.price * quantity;
-
-      const margin =
-        positionValue / leverage;
-
-      if (
-        margin >
-        account.availableBalance
-      ) {
-        console.log(
-          "Insufficient available balance."
-        );
-
-        return;
-      }
-
-      const now =
-        new Date().toISOString();
-
-      const timestamp =
-        Date.now();
-
-      const positionId =
-        `position-${timestamp}`;
-
-      const tradeId =
-        `trade-${timestamp}`;
-
-      const newPosition: Position = {
-        id: positionId,
-
-        strategyId,
-
-        symbol: asset.symbol,
-
-        name: asset.name,
-
-        side,
-
-        quantity,
-
-        entryPrice: asset.price,
-
-        currentPrice: asset.price,
-
-        leverage,
-
-        margin,
-
-        unrealizedPnl: 0,
-
-        unrealizedPnlPercent: 0,
-
-        status: "OPEN",
-
-        openedAt: now,
-      };
-
-      const orderSide =
-        side === "LONG"
-          ? "BUY"
-          : "SELL";
-
-      const newTrade: Trade = {
-        id: tradeId,
-
-        strategyId:
-          strategyId === "manual"
-            ? undefined
-            : strategyId,
-
-        symbol: asset.symbol,
-
-        side: orderSide,
-
-        quantity,
-
-        price: asset.price,
-
-        value: positionValue,
-
-        fee: 0,
-
-        realizedPnl: 0,
-
-        status: "FILLED",
-
-        executedAt: now,
-      };
-
-      setPositions((current) => [
-        newPosition,
-        ...current,
-      ]);
-
-      setTrades((current) => [
-        newTrade,
-        ...current,
-      ]);
-
-      setAccount((current) => ({
-        ...current,
-
-        availableBalance: Number(
-          (
-            current.availableBalance -
-            margin
-          ).toFixed(2)
-        ),
-
-        usedMargin: Number(
-          (
-            current.usedMargin +
-            margin
-          ).toFixed(2)
-        ),
-      }));
-
-      console.log(
-        "Paper position opened:",
-        newPosition
-      );
+      applyPortfolioState(payload.state);
     },
-    [account.availableBalance, assets]
+    [applyPortfolioState]
   );
 
   /*
@@ -769,14 +546,16 @@ export function TradingProvider({
         }
       );
 
-      openPaperPosition(
+      void openPaperPosition(
         asset.symbol,
         side,
         Number(
           quantity.toFixed(8)
         ),
         strategy.id
-      );
+      ).catch((error: unknown) => {
+        console.error("Strategy paper order failed:", error);
+      });
     },
     [
       strategies,
@@ -793,154 +572,20 @@ export function TradingProvider({
    */
 
   const closePosition = useCallback(
-    (positionId: string) => {
-      const position =
-        positions.find(
-          (item) =>
-            item.id === positionId
-        );
-
-      if (!position) {
-        console.log(
-          "Position not found:",
-          positionId
-        );
-
-        return;
-      }
-
-      if (position.status !== "OPEN") {
-        console.log(
-          "Position is already closed."
-        );
-
-        return;
-      }
-
-      const realizedPnl =
-        calculatePositionPnl(
-          position
-        );
-
-      const positionValue =
-        position.currentPrice *
-        position.quantity;
-
-      const closingSide =
-        position.side === "LONG"
-          ? "SELL"
-          : "BUY";
-
-      const now =
-        new Date().toISOString();
-
-      const closingTrade: Trade = {
-        id:
-          `trade-${Date.now()}`,
-
-        strategyId:
-          position.strategyId ===
-          "manual"
-            ? undefined
-            : position.strategyId,
-
-        symbol:
-          position.symbol,
-
-        side:
-          closingSide,
-
-        quantity:
-          position.quantity,
-
-        price:
-          position.currentPrice,
-
-        value:
-          positionValue,
-
-        fee:
-          0,
-
-        realizedPnl:
-          Number(
-            realizedPnl.toFixed(2)
-          ),
-
-        status:
-          "FILLED",
-
-        executedAt:
-          now,
-      };
-
-      setTrades((current) => [
-        closingTrade,
-        ...current,
-      ]);
-
-      setPositions((current) =>
-        current.filter(
-          (item) =>
-            item.id !== positionId
-        )
+    async (positionId: string) => {
+      const response = await fetch(
+        backendApiUrl(`/api/positions/${encodeURIComponent(positionId)}`),
+        { method: "DELETE" }
       );
-
-      setAccount((current) => {
-        const newBalance =
-          current.balance +
-          realizedPnl;
-
-        const newUsedMargin =
-          Math.max(
-            0,
-            current.usedMargin -
-              position.margin
-          );
-
-        const newAvailableBalance =
-          newBalance -
-          newUsedMargin;
-
-        const newRealizedPnl =
-          current.realizedPnl +
-          realizedPnl;
-
-        return {
-          ...current,
-
-          balance: Number(
-            newBalance.toFixed(2)
-          ),
-
-          availableBalance:
-            Number(
-              Math.max(
-                0,
-                newAvailableBalance
-              ).toFixed(2)
-            ),
-
-          usedMargin:
-            Number(
-              newUsedMargin.toFixed(2)
-            ),
-
-          realizedPnl:
-            Number(
-              newRealizedPnl.toFixed(2)
-            ),
-        };
-      });
-
-      console.log(
-        "Paper position closed:",
-        positionId,
-        "Realized P&L:",
-        realizedPnl
-      );
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(
+          payload.detail ?? payload.error ?? "Unable to close paper position."
+        );
+      }
+      applyPortfolioState(payload.state);
     },
-    [positions]
+    [applyPortfolioState]
   );
 
   /*
@@ -951,7 +596,7 @@ export function TradingProvider({
 
   const persistStrategy = useCallback(
     async (strategy: Strategy) => {
-      const response = await fetch("/api/strategies", {
+      const response = await fetch(backendApiUrl("/api/strategies"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -961,17 +606,19 @@ export function TradingProvider({
 
       if (!response.ok) {
         const payload = await response.json();
-        throw new Error(payload.error ?? "Unable to save strategy.");
+        throw new Error(payload.detail ?? payload.error ?? "Unable to save strategy.");
       }
+      const payload = await response.json();
+      return payload.strategy as Strategy;
     },
     []
   );
 
   const addStrategy = useCallback(
     async (strategy: Strategy) => {
-      await persistStrategy(strategy);
+      const savedStrategy = await persistStrategy(strategy);
       setStrategies((current) => [
-        strategy,
+        savedStrategy,
         ...current,
       ]);
     },
@@ -980,7 +627,7 @@ export function TradingProvider({
 
   const updateStrategyStatus =
     useCallback(
-      (
+      async (
         strategyId: string,
         status: Strategy["status"]
       ) => {
@@ -992,46 +639,49 @@ export function TradingProvider({
           status === "ACTIVE" &&
           !selectedStrategy?.paperApprovedBacktestId
         ) {
-          console.warn(
+          throw new Error(
             "Run and approve an eligible backtest before activating paper trading."
           );
-          return;
         }
-
-        let updatedStrategy: Strategy | null = null;
-
-        setStrategies((current) =>
-          current.map((strategy) => {
-            if (strategy.id !== strategyId) {
-              return strategy;
-            }
-
-            updatedStrategy = {
-              ...strategy,
-              status,
-              updatedAt:
-                new Date().toISOString(),
-            };
-
-            return updatedStrategy;
-          })
-        );
-
-        if (updatedStrategy) {
-          void fetch("/api/strategies", {
+        if (!selectedStrategy) {
+          throw new Error("Strategy not found.");
+        }
+        const updatedStrategy = {
+          ...selectedStrategy,
+          status,
+          updatedAt: new Date().toISOString(),
+        };
+        const response = await fetch(
+          backendApiUrl(`/api/strategies/${encodeURIComponent(strategyId)}`),
+          {
             method: "PUT",
-            headers: {
-              "Content-Type": "application/json",
-            },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify(updatedStrategy),
-          });
+          }
+        );
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.detail ?? payload.error ?? "Unable to update strategy.");
         }
+        setStrategies((current) =>
+          current.map((strategy) =>
+            strategy.id === strategyId ? payload.strategy : strategy
+          )
+        );
       },
       [strategies]
     );
 
   const deleteStrategy = useCallback(
-    (strategyId: string) => {
+    async (strategyId: string) => {
+      const response = await fetch(
+        backendApiUrl(`/api/strategies?id=${encodeURIComponent(strategyId)}`),
+        { method: "DELETE" }
+      );
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail ?? payload.error ?? "Unable to delete strategy.");
+      }
       setStrategies((current) =>
         current.filter(
           (strategy) =>
@@ -1039,9 +689,6 @@ export function TradingProvider({
         )
       );
 
-      void fetch(`/api/strategies?id=${encodeURIComponent(strategyId)}`, {
-        method: "DELETE",
-      });
     },
     []
   );
@@ -1052,7 +699,7 @@ export function TradingProvider({
       backtestRunId: string,
       reviewNotes: string
     ) => {
-      const response = await fetch("/api/backtest/review", {
+      const response = await fetch(backendApiUrl("/api/backtests/review"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1066,7 +713,7 @@ export function TradingProvider({
       const payload = await response.json();
 
       if (!response.ok) {
-        throw new Error(payload.error ?? "Strategy review failed.");
+        throw new Error(payload.detail ?? payload.error ?? "Strategy review failed.");
       }
 
       const approvedStrategy = payload.strategy as Strategy;
@@ -1095,11 +742,10 @@ export function TradingProvider({
 
   const value = useMemo(
     () => ({
-      account,
-
+      account: currentAccount,
       assets,
 
-      positions,
+      positions: currentPositions,
 
       trades,
 
@@ -1126,9 +772,9 @@ export function TradingProvider({
       approveStrategyForPaper,
     }),
     [
-      account,
+      currentAccount,
       assets,
-      positions,
+      currentPositions,
       trades,
       strategies,
       selectedSymbol,

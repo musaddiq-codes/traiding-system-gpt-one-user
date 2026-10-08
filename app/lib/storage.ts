@@ -1,66 +1,20 @@
-import fs from "fs/promises";
-import path from "path";
-
-import { mockStrategies } from "./mock-data";
 import type { Strategy } from "./trading-types";
 
-const DATA_DIR = path.join(process.cwd(), "data");
-const STRATEGIES_FILE = path.join(DATA_DIR, "strategies.json");
-
-async function ensureStorage(): Promise<void> {
-  await fs.mkdir(DATA_DIR, { recursive: true });
-
-  try {
-    await fs.access(STRATEGIES_FILE);
-  } catch {
-    await fs.writeFile(
-      STRATEGIES_FILE,
-      JSON.stringify(mockStrategies, null, 2),
-      "utf-8"
-    );
-  }
-}
+const BACKEND_URL = (
+  process.env.BACKEND_URL ?? "http://127.0.0.1:8000"
+).replace(/\/$/, "");
 
 export async function getStoredStrategies(): Promise<Strategy[]> {
-  await ensureStorage();
-
-  try {
-    const raw = await fs.readFile(STRATEGIES_FILE, "utf-8");
-    const parsed = JSON.parse(raw);
-
-    if (Array.isArray(parsed)) {
-      return parsed as Strategy[];
-    }
-  } catch {
-    // Fall back to seeded strategies if file is invalid.
+  const response = await fetch(`${BACKEND_URL}/api/strategies`, {
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw new Error(`Unable to load strategies from the backend (${response.status}).`);
   }
 
-  return mockStrategies;
-}
-
-export async function saveStoredStrategy(strategy: Strategy): Promise<Strategy[]> {
-  const current = await getStoredStrategies();
-  const normalized = current.filter((item) => item.id !== strategy.id);
-  normalized.unshift(strategy);
-
-  await fs.writeFile(
-    STRATEGIES_FILE,
-    JSON.stringify(normalized, null, 2),
-    "utf-8"
-  );
-
-  return normalized;
-}
-
-export async function deleteStoredStrategy(strategyId: string): Promise<Strategy[]> {
-  const current = await getStoredStrategies();
-  const filtered = current.filter((item) => item.id !== strategyId);
-
-  await fs.writeFile(
-    STRATEGIES_FILE,
-    JSON.stringify(filtered, null, 2),
-    "utf-8"
-  );
-
-  return filtered;
+  const payload = await response.json() as { strategies?: Strategy[] };
+  if (!Array.isArray(payload.strategies)) {
+    throw new Error("The backend returned an invalid strategies response.");
+  }
+  return payload.strategies;
 }

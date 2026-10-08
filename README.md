@@ -1,36 +1,59 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Trading System
 
-## Getting Started
+This repository uses Next.js for the interactive web interface and FastAPI for
+the trading API, market data, and SQLite-backed application state. The order
+endpoints are paper-trading only; the backend does not submit orders to an
+exchange. Public Binance market data is read without API credentials.
 
-First, run the development server:
+## Run locally
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+Install the Python requirements once:
+
+```powershell
+cd backend
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Run FastAPI in one terminal from the `backend` directory:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```powershell
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Run the frontend in a second terminal from the repository root:
 
-## Learn More
+```powershell
+pnpm dev
+```
 
-To learn more about Next.js, take a look at the following resources:
+Open `http://localhost:3000`. The API health check is available at
+`http://127.0.0.1:8000/health`; interactive API documentation is at
+`http://127.0.0.1:8000/docs`.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Configuration
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- `NEXT_PUBLIC_BACKEND_URL` sets the API URL used by browser requests. It
+  defaults to `http://127.0.0.1:8000`.
+- `BACKEND_URL` sets the API URL used by Next.js server code. It defaults to
+  `http://127.0.0.1:8000`.
+- `FRONTEND_ORIGINS` is a comma-separated list of allowed browser origins. It
+  defaults to `http://localhost:3000,http://127.0.0.1:3000`.
+- `DATABASE_PATH` overrides the SQLite database location. By default, the
+  database is created at `backend/data/trading.sqlite3`.
 
-## Deploy on Vercel
+On first startup, existing `data/strategies.json` strategies are copied into
+SQLite if the strategy table is empty. Paper positions, trades, strategies, and
+backtest review records are then managed by FastAPI. The interactive Next.js
+pages remain in the frontend; the strategy detail page reads its strategy
+record from FastAPI. Backtest computation remains in the existing Next.js
+route, while backtest records and paper-approval checks are stored by FastAPI.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Tests
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Run the backend tests from the `backend` directory:
+
+```powershell
+python -m unittest discover -s tests
+```

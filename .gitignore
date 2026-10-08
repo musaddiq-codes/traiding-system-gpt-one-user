@@ -19,6 +19,10 @@
 
 # production
 /build
+/backend/data/*.sqlite3
+/backend/data/*.sqlite3-shm
+/backend/data/*.sqlite3-wal
+/backend/.venv/
 
 # misc
 .DS_Store

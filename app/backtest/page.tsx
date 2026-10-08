@@ -7,6 +7,7 @@ import Sidebar from "../components/navigation/Sidebar";
 import { useTrading } from "../context/TradingContext";
 import type { Strategy } from "../lib/trading-types";
 import type { BacktestResult } from "../lib/backtest-types";
+import { backendApiUrl } from "../lib/api";
 
 export default function BacktestPage() {
   const { approveStrategyForPaper } = useTrading();
@@ -26,7 +27,10 @@ export default function BacktestPage() {
   useEffect(() => {
     async function loadStrategies() {
       try {
-        const response = await fetch("/api/strategies");
+        const response = await fetch(backendApiUrl("/api/strategies"));
+        if (!response.ok) {
+          throw new Error(`Backend strategy request failed (${response.status}).`);
+        }
         const payload = await response.json();
 
         if (Array.isArray(payload.strategies) && payload.strategies.length > 0) {

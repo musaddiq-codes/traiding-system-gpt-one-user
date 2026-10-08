@@ -25,25 +25,28 @@ export default function DashboardPage() {
 
   const [side, setSide] = useState<"LONG" | "SHORT">("LONG");
   const [amount, setAmount] = useState("");
+  const [orderError, setOrderError] = useState("");
 
   const selectedAsset =
     assets.find((asset) => asset.symbol === selectedSymbol) ??
     assets[0];
 
-  function handleTrade() {
+  async function handleTrade() {
     const quantity = Number(amount);
 
     if (!quantity || quantity <= 0 || !selectedAsset) {
       return;
     }
 
-    openPaperPosition(
-      selectedAsset.symbol,
-      side,
-      quantity
-    );
-
-    setAmount("");
+    setOrderError("");
+    try {
+      await openPaperPosition(selectedAsset.symbol, side, quantity);
+      setAmount("");
+    } catch (error) {
+      setOrderError(
+        error instanceof Error ? error.message : "Unable to place paper order."
+      );
+    }
   }
 
   return (
@@ -204,6 +207,11 @@ export default function DashboardPage() {
                     ? "Place Buy Order"
                     : "Place Sell Order"}
                 </button>
+                {orderError && (
+                  <p className="mt-3 text-xs text-red-400" role="alert">
+                    {orderError}
+                  </p>
+                )}
               </div>
             </div>
 

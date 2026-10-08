@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { useTrading } from "../../context/TradingContext";
+import { backendApiUrl } from "../../lib/api";
 import {
   isChartRange,
   mapTimeRangeToInterval,
@@ -68,7 +69,7 @@ export default function StrategyEngineStatus() {
       async function loadMarketCandles() {
         try {
           const response = await fetch(
-            `/api/market?symbol=${encodeURIComponent(market.symbol)}&interval=${encodeURIComponent(mapTimeRangeToInterval(validTimeframe))}&limit=200`,
+            backendApiUrl(`/api/market?symbol=${encodeURIComponent(market.symbol)}&interval=${encodeURIComponent(mapTimeRangeToInterval(validTimeframe))}&limit=200`),
             { cache: "no-store", signal: abortController.signal }
           );
 

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
 import StrategyEngineStatus from "../components/strategies/StrategyEngineStatus";
 import Sidebar from "../components/navigation/Sidebar";
 import Header from "../components/navigation/Header";
@@ -13,6 +14,18 @@ export default function StrategiesPage() {
     updateStrategyStatus,
     deleteStrategy,
   } = useTrading();
+  const [actionError, setActionError] = useState("");
+
+  async function runAction(action: () => Promise<void>) {
+    setActionError("");
+    try {
+      await action();
+    } catch (error) {
+      setActionError(
+        error instanceof Error ? error.message : "Unable to update strategy."
+      );
+    }
+  }
 
   return (
     <div className="min-h-screen bg-[#07090d] text-white">
@@ -45,6 +58,11 @@ export default function StrategiesPage() {
               + Create Strategy
             </Link>
           </div>
+          {actionError && (
+            <p className="mb-5 text-xs text-red-400" role="alert">
+              {actionError}
+            </p>
+          )}
 <StrategyEngineStatus />
           {strategies.length === 0 ? (
             <div className="trading-panel p-16 text-center">
@@ -139,24 +157,18 @@ export default function StrategiesPage() {
 
                       {strategy.status === "ACTIVE" ? (
                         <button
-                          onClick={() =>
-                            updateStrategyStatus(
-                              strategy.id,
-                              "PAUSED"
-                            )
-                          }
+                          onClick={() => void runAction(() =>
+                            updateStrategyStatus(strategy.id, "PAUSED")
+                          )}
                           className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-[10px] font-semibold text-blue-400 transition hover:bg-blue-500/10"
                         >
                           Pause
                         </button>
                       ) : strategy.paperApprovedBacktestId ? (
                         <button
-                          onClick={() =>
-                            updateStrategyStatus(
-                              strategy.id,
-                              "ACTIVE"
-                            )
-                          }
+                          onClick={() => void runAction(() =>
+                            updateStrategyStatus(strategy.id, "ACTIVE")
+                          )}
                           className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-[10px] font-semibold text-blue-400 transition hover:bg-blue-500/10"
                         >
                           Start Paper
@@ -171,9 +183,9 @@ export default function StrategiesPage() {
                       )}
 
                       <button
-                        onClick={() =>
+                        onClick={() => void runAction(() =>
                           deleteStrategy(strategy.id)
-                        }
+                        )}
                         className="rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 text-[10px] font-semibold text-red-400 transition hover:bg-red-500/10"
                       >
                         Delete

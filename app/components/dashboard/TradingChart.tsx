@@ -13,6 +13,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { useTrading } from "../../context/TradingContext";
 import type { CandlePoint, ChartRange } from "../../lib/market-data";
+import { backendApiUrl } from "../../lib/api";
 import { subscribeToKline } from "../../lib/market-data-stream";
 import { formatCurrency } from "../../lib/trading-utils";
 
@@ -133,7 +134,7 @@ export default function TradingChart() {
         setError(null);
 
         const response = await fetch(
-          `/api/market?symbol=${encodeURIComponent(selectedSymbol)}&interval=${encodeURIComponent(timeRange)}&limit=120`,
+          backendApiUrl(`/api/market?symbol=${encodeURIComponent(selectedSymbol)}&interval=${encodeURIComponent(timeRange)}&limit=120`),
           { cache: "no-store", signal: controller.signal }
         );
 

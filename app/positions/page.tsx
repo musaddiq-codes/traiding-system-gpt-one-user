@@ -1,9 +1,11 @@
 "use client";
 
+import { useState } from "react";
 import Sidebar from "../components/navigation/Sidebar";
 import Header from "../components/navigation/Header";
 
 import { useTrading } from "../context/TradingContext";
+import type { Position } from "../lib/trading-types";
 import {
   calculatePositionPnl,
   calculatePositionPnlPercent,
@@ -155,11 +157,12 @@ function PositionRow({
   pnl,
   pnlPercent,
 }: {
-  position: any;
+  position: Position;
   pnl: number;
   pnlPercent: number;
 }) {
   const { closePosition } = useTrading();
+  const [error, setError] = useState("");
 
   return (
     <tr className="text-xs transition hover:bg-[#0f141c]">
@@ -223,13 +226,27 @@ function PositionRow({
 
       <td className="px-5 py-4">
         <button
-          onClick={() =>
-            closePosition(position.id)
-          }
+          onClick={async () => {
+            setError("");
+            try {
+              await closePosition(position.id);
+            } catch (closeError) {
+              setError(
+                closeError instanceof Error
+                  ? closeError.message
+                  : "Unable to close position."
+              );
+            }
+          }}
           className="rounded-md border border-red-500/20 bg-red-500/5 px-3 py-1.5 text-[10px] font-semibold text-red-400 transition hover:bg-red-500/10"
         >
           Close
         </button>
+        {error && (
+          <div className="mt-2 text-[10px] text-red-400" role="alert">
+            {error}
+          </div>
+        )}
       </td>
     </tr>
   );
