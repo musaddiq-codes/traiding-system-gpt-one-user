@@ -1,4 +1,5 @@
 import sqlite3
+from typing import Any
 
 
 STATE_TRADE_LIMIT = 500
@@ -40,10 +41,38 @@ def _trade_from_row(row: sqlite3.Row) -> dict:
     }
     if row["strategy_id"] is not None:
         trade["strategyId"] = row["strategy_id"]
+    if "note" in row.keys() and row["note"] is not None:
+        trade["note"] = row["note"]
     return trade
 
 
-def load_portfolio(connection: sqlite3.Connection) -> dict:
+def _refresh_open_positions(connection: sqlite3.Connection) -> None:
+    symbols = connection.execute(
+        "SELECT DISTINCT symbol FROM positions WHERE status = 'OPEN'"
+    ).fetchall()
+    if not symbols:
+        return
+
+    from app.market.service import market_data_service
+
+    prices: dict[str, float] = {}
+    for row in symbols:
+        market_price = market_data_service.get_price(row["symbol"])
+        if market_price["is_live"]:
+            prices[row["symbol"]] = float(market_price["price"])
+    if prices:
+        from app.trading.position_manager import mark_to_market
+
+        mark_to_market(prices, connection=connection)
+
+
+def load_portfolio(
+    connection: sqlite3.Connection,
+    *,
+    refresh_market_data: bool = True,
+) -> dict[str, Any]:
+    if refresh_market_data:
+        _refresh_open_positions(connection)
     account_row = connection.execute(
         "SELECT balance, realized_pnl FROM account WHERE id = 1"
     ).fetchone()
@@ -126,8 +155,8 @@ def insert_trade(
         """
         INSERT INTO trades (
             id, strategy_id, position_id, symbol, side, quantity, price, value,
-            fee, realized_pnl, status, executed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            fee, realized_pnl, status, executed_at, note
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             trade["id"],
@@ -142,6 +171,7 @@ def insert_trade(
             trade["realizedPnl"],
             trade["status"],
             trade["executedAt"],
+            trade.get("note"),
         ),
     )
 

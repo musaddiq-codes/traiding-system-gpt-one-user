@@ -167,6 +167,7 @@ def initialize_database() -> None:
                 value REAL NOT NULL,
                 fee REAL NOT NULL,
                 realized_pnl REAL NOT NULL,
+                note TEXT,
                 status TEXT NOT NULL CHECK (
                     status IN ('FILLED', 'PENDING', 'CANCELLED')
                 ),
@@ -192,8 +193,36 @@ def initialize_database() -> None:
                 reviewed_at TEXT,
                 review_notes TEXT
             );
+            CREATE TABLE IF NOT EXISTS strategy_signals (
+                id TEXT PRIMARY KEY,
+                strategy_id TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                candle_ts INTEGER NOT NULL,
+                signal TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                score REAL NOT NULL,
+                action_taken TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(strategy_id, candle_ts)
+            );
+            CREATE INDEX IF NOT EXISTS idx_strategy_signals_created_at
+                ON strategy_signals(created_at DESC);
+            CREATE TABLE IF NOT EXISTS strategy_runtime (
+                strategy_id TEXT PRIMARY KEY,
+                last_candle_ts INTEGER,
+                last_error TEXT,
+                last_run_at TEXT,
+                state TEXT NOT NULL DEFAULT '{}'
+            );
             """
         )
+
+        trade_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(trades)").fetchall()
+        }
+        if "note" not in trade_columns:
+            connection.execute("ALTER TABLE trades ADD COLUMN note TEXT")
 
         connection.execute("BEGIN IMMEDIATE")
         user_version = connection.execute("PRAGMA user_version").fetchone()[0]

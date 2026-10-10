@@ -7,9 +7,10 @@ from fastapi import APIRouter, HTTPException, Query
 from app.market.data import (
     CHART_RANGES,
     FALLBACK_ASSETS,
-    fetch_candles,
+    FAVORITE_SYMBOLS,
     fetch_market_snapshot,
 )
+from app.market.service import market_data_service
 
 
 logger = logging.getLogger(__name__)
@@ -27,7 +28,11 @@ async def get_market(
         if interval not in CHART_RANGES:
             raise HTTPException(status_code=400, detail="Unsupported candle interval.")
         try:
-            candles = await fetch_candles(symbol, interval, limit)
+            candles = await market_data_service.load_candles(
+                symbol,
+                interval,
+                limit,
+            )
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         except httpx.HTTPError as error:
@@ -36,8 +41,24 @@ async def get_market(
                 status_code=502,
                 detail="Live market or candle data is currently unavailable.",
             ) from error
-        return {"candles": candles, "updatedAt": updated_at, "source": "binance-live"}
+        return {
+            "candles": candles,
+            "updatedAt": updated_at,
+            "source": "binance-live",
+            "is_live": True,
+        }
 
+    cached_assets = market_data_service.get_market_snapshot()
+    if (
+        len(cached_assets) == len(FAVORITE_SYMBOLS)
+        and all(asset["is_live"] for asset in cached_assets)
+    ):
+        return {
+            "assets": cached_assets,
+            "updatedAt": updated_at,
+            "source": "binance-live",
+            "is_live": True,
+        }
     try:
         assets = await fetch_market_snapshot()
     except (httpx.HTTPError, ValueError, KeyError) as error:
@@ -46,5 +67,12 @@ async def get_market(
             "assets": FALLBACK_ASSETS,
             "updatedAt": updated_at,
             "source": "mock-market-data-fallback",
+            "is_live": False,
         }
-    return {"assets": assets, "updatedAt": updated_at, "source": "binance-live"}
+    market_data_service.ingest_market_snapshot(assets)
+    return {
+        "assets": assets,
+        "updatedAt": updated_at,
+        "source": "binance-live",
+        "is_live": True,
+    }

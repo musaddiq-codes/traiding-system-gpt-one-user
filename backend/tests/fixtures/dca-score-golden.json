@@ -1,0 +1,336 @@
+[
+  {
+    "name": "invalid-input",
+    "input": {
+      "symbol": "BTCUSDT",
+      "score": 101,
+      "currentPrice": 100,
+      "shortTermChangePct": 0,
+      "changeWindowMinutes": 5,
+      "longTermChangePct": 0,
+      "trades": []
+    },
+    "expected": {
+      "action": "WAIT",
+      "symbol": "BTCUSDT",
+      "amountUSDT": 0,
+      "reason": "Invalid input data."
+    }
+  },
+  {
+    "name": "rapid-rise-hold",
+    "input": {
+      "symbol": "BTCUSDT",
+      "score": 60,
+      "currentPrice": 105,
+      "shortTermChangePct": 3,
+      "changeWindowMinutes": 5,
+      "longTermChangePct": 0,
+      "trades": [
+        {
+          "symbol": "BTCUSDT",
+          "price": 100,
+          "amountUSDT": 1,
+          "quantity": 0.01,
+          "timestamp": 1
+        }
+      ]
+    },
+    "expected": {
+      "action": "HOLD",
+      "symbol": "BTCUSDT",
+      "amountUSDT": 0,
+      "reason": "Rapid rise: wait for the 10% profit target."
+    }
+  },
+  {
+    "name": "bullish-profit-hold",
+    "input": {
+      "symbol": "BTCUSDT",
+      "score": 70,
+      "currentPrice": 103,
+      "shortTermChangePct": 0,
+      "changeWindowMinutes": 5,
+      "longTermChangePct": 0,
+      "trades": [
+        {
+          "symbol": "BTCUSDT",
+          "price": 100,
+          "amountUSDT": 1,
+          "quantity": 0.01,
+          "timestamp": 1
+        }
+      ]
+    },
+    "expected": {
+      "action": "HOLD",
+      "symbol": "BTCUSDT",
+      "amountUSDT": 0,
+      "reason": "Bullish score: continue holding and protect profits."
+    }
+  },
+  {
+    "name": "neutral-profit-sell",
+    "input": {
+      "symbol": "BTCUSDT",
+      "score": 69,
+      "currentPrice": 103,
+      "shortTermChangePct": 0,
+      "changeWindowMinutes": 5,
+      "longTermChangePct": 0,
+      "trades": [
+        {
+          "symbol": "BTCUSDT",
+          "price": 100,
+          "amountUSDT": 1,
+          "quantity": 0.01,
+          "timestamp": 1
+        }
+      ]
+    },
+    "expected": {
+      "action": "SELL",
+      "symbol": "BTCUSDT",
+      "amountUSDT": 0,
+      "reason": "Profit target reached with neutral or bearish score."
+    }
+  },
+  {
+    "name": "emergency-bullish",
+    "input": {
+      "symbol": "BTCUSDT",
+      "score": 70,
+      "currentPrice": 100,
+      "shortTermChangePct": -15,
+      "changeWindowMinutes": 5,
+      "longTermChangePct": 0,
+      "trades": []
+    },
+    "expected": {
+      "action": "BUY_DOUBLE",
+      "symbol": "BTCUSDT",
+      "amountUSDT": 2,
+      "reason": "Severe rapid drop with bullish score."
+    }
+  },
+  {
+    "name": "emergency-neutral",
+    "input": {
+      "symbol": "BTCUSDT",
+      "score": 30,
+      "currentPrice": 100,
+      "shortTermChangePct": -15,
+      "changeWindowMinutes": 5,
+      "longTermChangePct": 0,
+      "trades": []
+    },
+    "expected": {
+      "action": "BUY_DOUBLE",
+      "symbol": "BTCUSDT",
+      "amountUSDT": 2,
+      "reason": "Severe rapid drop with neutral score."
+    }
+  },
+  {
+    "name": "emergency-bearish",
+    "input": {
+      "symbol": "BTCUSDT",
+      "score": 29,
+      "currentPrice": 100,
+      "shortTermChangePct": -15,
+      "changeWindowMinutes": 5,
+      "longTermChangePct": 0,
+      "trades": []
+    },
+    "expected": {
+      "action": "BUY",
+      "symbol": "BTCUSDT",
+      "amountUSDT": 1,
+      "reason": "Severe rapid drop with bearish score; reduced emergency entry."
+    }
+  },
+  {
+    "name": "extended-rise-wait",
+    "input": {
+      "symbol": "BTCUSDT",
+      "score": 70,
+      "currentPrice": 100,
+      "shortTermChangePct": 0,
+      "changeWindowMinutes": 5,
+      "longTermChangePct": 5,
+      "trades": []
+    },
+    "expected": {
+      "action": "WAIT",
+      "symbol": "BTCUSDT",
+      "amountUSDT": 0,
+      "reason": "Bullish score, but price has already risen significantly."
+    }
+  },
+  {
+    "name": "initial-entry-buy",
+    "input": {
+      "symbol": "BTCUSDT",
+      "score": 70,
+      "currentPrice": 100,
+      "shortTermChangePct": 0,
+      "changeWindowMinutes": 5,
+      "longTermChangePct": 0,
+      "trades": []
+    },
+    "expected": {
+      "action": "BUY",
+      "symbol": "BTCUSDT",
+      "amountUSDT": 1,
+      "reason": "Bullish score: initial entry."
+    }
+  },
+  {
+    "name": "low-score-no-entry",
+    "input": {
+      "symbol": "BTCUSDT",
+      "score": 69,
+      "currentPrice": 100,
+      "shortTermChangePct": 0,
+      "changeWindowMinutes": 5,
+      "longTermChangePct": 0,
+      "trades": []
+    },
+    "expected": {
+      "action": "WAIT",
+      "symbol": "BTCUSDT",
+      "amountUSDT": 0,
+      "reason": "No existing position and score is below 70."
+    }
+  },
+  {
+    "name": "insufficient-drop-wait",
+    "input": {
+      "symbol": "BTCUSDT",
+      "score": 50,
+      "currentPrice": 98,
+      "shortTermChangePct": 0,
+      "changeWindowMinutes": 5,
+      "longTermChangePct": 0,
+      "trades": [
+        {
+          "symbol": "BTCUSDT",
+          "price": 100,
+          "amountUSDT": 1,
+          "quantity": 0.01,
+          "timestamp": 1
+        }
+      ]
+    },
+    "expected": {
+      "action": "WAIT",
+      "symbol": "BTCUSDT",
+      "amountUSDT": 0,
+      "reason": "Price has not dropped 3% below the last buy price."
+    }
+  },
+  {
+    "name": "rapid-drop-wait",
+    "input": {
+      "symbol": "BTCUSDT",
+      "score": 50,
+      "currentPrice": 96,
+      "shortTermChangePct": -5,
+      "changeWindowMinutes": 5,
+      "longTermChangePct": 0,
+      "trades": [
+        {
+          "symbol": "BTCUSDT",
+          "price": 100,
+          "amountUSDT": 1,
+          "quantity": 0.01,
+          "timestamp": 1
+        }
+      ]
+    },
+    "expected": {
+      "action": "WAIT",
+      "symbol": "BTCUSDT",
+      "amountUSDT": 0,
+      "reason": "Price is dropping rapidly; wait for the market to slow."
+    }
+  },
+  {
+    "name": "gradual-bullish-double-buy",
+    "input": {
+      "symbol": "BTCUSDT",
+      "score": 70,
+      "currentPrice": 97,
+      "shortTermChangePct": 0,
+      "changeWindowMinutes": 5,
+      "longTermChangePct": 0,
+      "trades": [
+        {
+          "symbol": "BTCUSDT",
+          "price": 100,
+          "amountUSDT": 1,
+          "quantity": 0.01,
+          "timestamp": 1
+        }
+      ]
+    },
+    "expected": {
+      "action": "BUY_DOUBLE",
+      "symbol": "BTCUSDT",
+      "amountUSDT": 2,
+      "reason": "Gradual 3% drop with bullish score."
+    }
+  },
+  {
+    "name": "gradual-neutral-buy",
+    "input": {
+      "symbol": "BTCUSDT",
+      "score": 30,
+      "currentPrice": 97,
+      "shortTermChangePct": 0,
+      "changeWindowMinutes": 5,
+      "longTermChangePct": 0,
+      "trades": [
+        {
+          "symbol": "BTCUSDT",
+          "price": 100,
+          "amountUSDT": 1,
+          "quantity": 0.01,
+          "timestamp": 1
+        }
+      ]
+    },
+    "expected": {
+      "action": "BUY",
+      "symbol": "BTCUSDT",
+      "amountUSDT": 1,
+      "reason": "Gradual 3% drop with neutral score."
+    }
+  },
+  {
+    "name": "gradual-bearish-wait",
+    "input": {
+      "symbol": "BTCUSDT",
+      "score": 29,
+      "currentPrice": 97,
+      "shortTermChangePct": 0,
+      "changeWindowMinutes": 5,
+      "longTermChangePct": 0,
+      "trades": [
+        {
+          "symbol": "BTCUSDT",
+          "price": 100,
+          "amountUSDT": 1,
+          "quantity": 0.01,
+          "timestamp": 1
+        }
+      ]
+    },
+    "expected": {
+      "action": "WAIT",
+      "symbol": "BTCUSDT",
+      "amountUSDT": 0,
+      "reason": "Bearish score: wait for price stabilization."
+    }
+  }
+]

@@ -4,14 +4,27 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import backtests, market, orders, positions, strategies
+from app.api.routes import backtests, engine, market, orders, plugins, positions, strategies
+from app.api.websocket import router as websocket_router
 from app.database.database import initialize_database
+from app.market.service import market_data_service
+from app.trading.position_manager import start_market_updates
+from app.trading.runner import strategy_runner
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     initialize_database()
-    yield
+    await market_data_service.start()
+    unsubscribe_position_updates = start_market_updates(market_data_service)
+    if strategy_runner.enabled:
+        await strategy_runner.start()
+    try:
+        yield
+    finally:
+        await strategy_runner.stop()
+        unsubscribe_position_updates()
+        await market_data_service.stop()
 
 
 app = FastAPI(
@@ -38,6 +51,9 @@ app.add_middleware(
 )
 
 app.include_router(market.router)
+app.include_router(websocket_router)
+app.include_router(plugins.router)
+app.include_router(engine.router)
 app.include_router(strategies.router)
 app.include_router(orders.router)
 app.include_router(positions.router)

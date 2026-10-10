@@ -87,6 +87,59 @@ class BackendApiTests(unittest.TestCase):
 
         return asyncio.run(send_request())
 
+    def test_plugin_manifests_and_algorithm_validation(self) -> None:
+        plugins = self.request("GET", "/api/plugins")
+        self.assertEqual(plugins.status_code, 200)
+        manifest = {plugin["id"]: plugin for plugin in plugins.json()}
+        self.assertEqual(
+            list(manifest),
+            ["text-rules", "dca-score"],
+        )
+        self.assertTrue(manifest["dca-score"]["longOnly"])
+        self.assertEqual(manifest["dca-score"]["params"], [])
+
+        dca_strategy = strategy_payload()
+        dca_strategy.pop("entryCondition")
+        dca_strategy.pop("exitCondition")
+        dca_strategy["algorithmId"] = "dca-score"
+        created = self.request(
+            "POST",
+            "/api/strategies",
+            json=dca_strategy,
+        )
+        self.assertEqual(created.status_code, 200)
+        self.assertEqual(created.json()["strategy"]["params"], {})
+
+        unknown_strategy = {
+            **strategy_payload(),
+            "algorithmId": "not-registered",
+        }
+        unknown = self.request(
+            "POST",
+            "/api/strategies",
+            json=unknown_strategy,
+        )
+        self.assertEqual(unknown.status_code, 422)
+
+    def test_backtest_snapshot_records_non_default_plugin_configuration(self) -> None:
+        dca_strategy = strategy_payload()
+        dca_strategy.pop("entryCondition")
+        dca_strategy.pop("exitCondition")
+        dca_strategy["algorithmId"] = "dca-score"
+        dca_strategy["params"] = {}
+        response = self.request(
+            "POST",
+            "/api/backtests/runs",
+            json={
+                "strategy": dca_strategy,
+                "result": backtest_result(),
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        snapshot = response.json()["strategySnapshot"]
+        self.assertEqual(snapshot["algorithmId"], "dca-score")
+        self.assertEqual(snapshot["params"], {})
+
     def test_health_and_portfolio_state(self) -> None:
         self.assertEqual(self.request("GET", "/health").json(), {"status": "ok"})
         state = self.request("GET", "/api/state")
@@ -446,6 +499,42 @@ class BackendApiTests(unittest.TestCase):
             },
         )
         self.assertEqual(response.status_code, 422)
+
+    def test_market_fallback_is_explicitly_non_live(self) -> None:
+        with patch(
+            "app.api.routes.market.fetch_market_snapshot",
+            new=AsyncMock(side_effect=httpx.ConnectError("offline")),
+        ):
+            response = self.request("GET", "/api/market")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["source"],
+            "mock-market-data-fallback",
+        )
+        self.assertFalse(response.json()["is_live"])
+
+    def test_order_for_non_favorite_never_uses_demo_fallback_price(self) -> None:
+        with (
+            patch(
+                "app.api.routes.positions.fetch_market_snapshot",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
+                "app.api.routes.positions.fetch_market_ticker",
+                new=AsyncMock(side_effect=httpx.ConnectError("offline")),
+            ),
+        ):
+            response = self.request(
+                "POST",
+                "/api/orders",
+                json={
+                    "symbol": "DOGE/USDT",
+                    "side": "LONG",
+                    "quantity": 1,
+                },
+            )
+        self.assertEqual(response.status_code, 502)
+        self.assertIn("live market price is required", response.json()["detail"])
 
     def _fake_market(self):
         return patch(

@@ -7,7 +7,7 @@ from app.api.routes.schemas import BacktestRecordPayload, BacktestReviewPayload
 from app.api.routes.strategies import _load_strategy, _save_strategy
 from app.database.database import database_connection
 from app.risk.backtest_policy import evaluate_eligibility, validate_result_shape
-from app.trading.engine import get_strategy_signature
+from app.trading.engine import get_strategy_signature, get_strategy_snapshot
 
 
 router = APIRouter(prefix="/api/backtests", tags=["backtests"])
@@ -54,24 +54,7 @@ def save_run(payload: BacktestRecordPayload) -> dict:
         "id": run_id,
         "strategyId": strategy["id"],
         "strategySignature": get_strategy_signature(strategy),
-        "strategySnapshot": {
-            key: strategy[key]
-            for key in (
-                "id",
-                "name",
-                "description",
-                "type",
-                "symbol",
-                "timeframe",
-                "entryCondition",
-                "exitCondition",
-                "stopLoss",
-                "takeProfit",
-                "positionSize",
-                "riskPerTrade",
-                "maxPositions",
-            )
-        },
+        "strategySnapshot": get_strategy_snapshot(strategy),
         "result": result,
         "createdAt": datetime.now(timezone.utc).isoformat(),
     }
