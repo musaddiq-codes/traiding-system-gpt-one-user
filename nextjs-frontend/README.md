@@ -1,3 +1,22 @@
+
+
+
+
+
+
+
+
+cd /d "C:\Users\OMNIX\Desktop\traiding-system\manual-nextjs-gpt\backend"
+.venv\Scripts\activate.bat
+
+
+
+python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+
+
+
+
+
 # Trading System
 
 This repository uses Next.js for the interactive web interface and FastAPI for

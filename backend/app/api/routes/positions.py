@@ -1,4 +1,3 @@
-import json
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -8,6 +7,15 @@ from fastapi import APIRouter, HTTPException
 from app.api.routes.schemas import OrderPayload
 from app.database.database import database_connection
 from app.market.data import FALLBACK_ASSETS, fetch_market_snapshot, normalize_symbol
+from app.risk.manager import OrderRejected, check_order
+from app.trading.portfolio import (
+    _position_from_row,
+    apply_realized_pnl,
+    insert_position,
+    insert_trade,
+    load_portfolio,
+    mark_position_closed,
+)
 
 
 router = APIRouter(prefix="/api", tags=["portfolio"])
@@ -15,28 +23,7 @@ router = APIRouter(prefix="/api", tags=["portfolio"])
 
 def get_portfolio_snapshot() -> dict:
     with database_connection() as connection:
-        row = connection.execute(
-            "SELECT payload FROM app_state WHERE id = 1"
-        ).fetchone()
-    if row is None:
-        raise RuntimeError("Portfolio state has not been initialized.")
-    return json.loads(row["payload"])
-
-
-def _load_portfolio_snapshot(connection) -> dict:
-    row = connection.execute(
-        "SELECT payload FROM app_state WHERE id = 1"
-    ).fetchone()
-    if row is None:
-        raise RuntimeError("Portfolio state has not been initialized.")
-    return json.loads(row["payload"])
-
-
-def _save_portfolio_snapshot(connection, snapshot: dict) -> None:
-    connection.execute(
-        "UPDATE app_state SET payload = ? WHERE id = 1",
-        (json.dumps(snapshot),),
-    )
+        return load_portfolio(connection)
 
 
 async def _get_current_price(symbol: str) -> tuple[str, float, str]:
@@ -68,10 +55,21 @@ async def open_paper_position(payload: OrderPayload) -> tuple[dict, dict]:
     symbol, price, name = await _get_current_price(payload.symbol)
     with database_connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
-        snapshot = _load_portfolio_snapshot(connection)
+        snapshot = load_portfolio(connection)
         account = snapshot["account"]
         margin = price * payload.quantity
-        available = float(account["balance"]) - float(account["usedMargin"])
+        try:
+            check_order(
+                connection,
+                snapshot,
+                strategy_id=payload.strategyId,
+                symbol=symbol,
+                quantity=payload.quantity,
+                price=price,
+            )
+        except OrderRejected as error:
+            raise HTTPException(status_code=error.status_code, detail=str(error)) from error
+        available = float(account["availableBalance"])
         if margin > available:
             raise HTTPException(status_code=422, detail="Insufficient available balance.")
 
@@ -109,13 +107,8 @@ async def open_paper_position(payload: OrderPayload) -> tuple[dict, dict]:
         if payload.strategyId and payload.strategyId != "manual":
             trade["strategyId"] = payload.strategyId
 
-        snapshot["positions"].insert(0, position)
-        snapshot["trades"].insert(0, trade)
-        account["usedMargin"] = round(float(account["usedMargin"]) + margin, 2)
-        account["availableBalance"] = round(
-            max(0, float(account["balance"]) - account["usedMargin"]), 2
-        )
-        _save_portfolio_snapshot(connection, snapshot)
+        insert_position(connection, position)
+        insert_trade(connection, trade, position["id"])
     return position, trade
 
 
@@ -143,24 +136,20 @@ async def close_position(position_id: str) -> dict:
 
     with database_connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
-        snapshot = _load_portfolio_snapshot(connection)
-        position_index = next(
-            (
-                index
-                for index, item in enumerate(snapshot["positions"])
-                if item["id"] == position_id
-            ),
-            None,
-        )
-        if position_index is None:
+        position_row = connection.execute(
+            """
+            SELECT * FROM positions
+            WHERE id = ? AND status = 'OPEN'
+            """,
+            (position_id,),
+        ).fetchone()
+        if position_row is None:
             raise HTTPException(status_code=404, detail="Position not found.")
-        position = snapshot["positions"][position_index]
+        position = _position_from_row(position_row)
         quantity = float(position["quantity"])
         entry_price = float(position["entryPrice"])
         direction = 1 if position["side"] == "LONG" else -1
         realized_pnl = (price - entry_price) * quantity * direction
-        margin = float(position["margin"])
-        account = snapshot["account"]
         now = datetime.now(timezone.utc).isoformat()
         trade = {
             "id": f"trade-{uuid4().hex}",
@@ -177,18 +166,8 @@ async def close_position(position_id: str) -> dict:
         if position.get("strategyId"):
             trade["strategyId"] = position["strategyId"]
 
-        snapshot["positions"].pop(position_index)
-        snapshot["trades"].insert(0, trade)
-        account["balance"] = round(float(account["balance"]) + realized_pnl, 2)
-        account["realizedPnl"] = round(float(account["realizedPnl"]) + realized_pnl, 2)
-        account["usedMargin"] = round(max(0, float(account["usedMargin"]) - margin), 2)
-        account["availableBalance"] = round(
-            max(0, float(account["balance"]) - account["usedMargin"]), 2
-        )
-        account["unrealizedPnl"] = round(
-            sum(float(item.get("unrealizedPnl", 0)) for item in snapshot["positions"]), 2
-        )
-        account["equity"] = round(account["balance"] + account["unrealizedPnl"], 2)
-        account["totalPnl"] = round(account["realizedPnl"] + account["unrealizedPnl"], 2)
-        _save_portfolio_snapshot(connection, snapshot)
+        mark_position_closed(connection, position_id, now)
+        insert_trade(connection, trade, position_id)
+        apply_realized_pnl(connection, realized_pnl)
+        snapshot = load_portfolio(connection)
     return {"trade": trade, "state": snapshot, "mode": "paper"}

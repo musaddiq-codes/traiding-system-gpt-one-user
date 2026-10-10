@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException
 from app.api.routes.schemas import BacktestRecordPayload, BacktestReviewPayload
 from app.api.routes.strategies import _load_strategy, _save_strategy
 from app.database.database import database_connection
+from app.risk.backtest_policy import evaluate_eligibility, validate_result_shape
 from app.trading.engine import get_strategy_signature
 
 
@@ -35,11 +36,19 @@ def _read_run(run_id: str) -> dict | None:
 def save_run(payload: BacktestRecordPayload) -> dict:
     strategy = payload.strategy.model_dump(exclude_none=True)
     result = payload.result
+    try:
+        validate_result_shape(result)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     run_id = result.get("runId")
     if not isinstance(run_id, str) or not run_id:
         raise HTTPException(status_code=422, detail="Backtest result must include a runId.")
     if result.get("strategyId") != strategy["id"]:
         raise HTTPException(status_code=422, detail="Backtest strategy id does not match.")
+    eligible, reason = evaluate_eligibility(result)
+    result["eligibleForPaperReview"] = eligible
+    result["reviewEligibilityReason"] = reason
 
     run = {
         "id": run_id,
@@ -103,8 +112,7 @@ def get_run(run_id: str) -> dict:
     return run
 
 
-@router.patch("/runs/{run_id}/review")
-def mark_run_reviewed(run_id: str, notes: str = "") -> dict:
+def _mark_reviewed(run_id: str, notes: str = "") -> dict:
     if len(notes) > 2_000:
         raise HTTPException(status_code=422, detail="Review notes cannot exceed 2,000 characters.")
     reviewed_at = datetime.now(timezone.utc).isoformat()
@@ -161,5 +169,5 @@ def review_run(payload: BacktestReviewPayload) -> dict:
     strategy["paperApprovedAt"] = approved_at
     strategy["updatedAt"] = approved_at
     _save_strategy(strategy)
-    mark_run_reviewed(run["id"], payload.notes.strip())
+    _mark_reviewed(run["id"], payload.notes.strip())
     return {"strategy": strategy, "reviewedAt": approved_at}

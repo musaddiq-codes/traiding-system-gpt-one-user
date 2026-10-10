@@ -9,7 +9,24 @@ from typing import Generator
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATABASE_PATH = BACKEND_ROOT / "data" / "trading.sqlite3"
 DATABASE_PATH = Path(os.environ.get("DATABASE_PATH", DEFAULT_DATABASE_PATH))
-LEGACY_STRATEGIES_PATH = BACKEND_ROOT.parent / "data" / "strategies.json"
+DEFAULT_STARTING_BALANCE = 100000
+
+
+def _candidate_legacy_strategy_paths() -> list[Path]:
+    root = BACKEND_ROOT.parent
+    candidates = [
+        BACKEND_ROOT / "data" / "strategies.json",
+        root / "data" / "strategies.json",
+        root / "nextjs-frontend" / "data" / "strategies.json",
+        root / "frontend" / "data" / "strategies.json",
+    ]
+    return [path for path in dict.fromkeys(candidates)]
+
+
+LEGACY_STRATEGIES_PATH = next(
+    (path for path in _candidate_legacy_strategy_paths() if path.exists()),
+    BACKEND_ROOT.parent / "data" / "strategies.json",
+)
 
 
 def connect_database() -> sqlite3.Connection:
@@ -44,14 +61,125 @@ def _load_legacy_strategies() -> list[dict]:
     return [item for item in payload if isinstance(item, dict)]
 
 
+def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
+    return connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone() is not None
+
+
+def _import_legacy_portfolio(
+    connection: sqlite3.Connection,
+    payload: dict,
+) -> None:
+    account = payload["account"]
+    connection.execute(
+        "INSERT INTO account (id, balance, realized_pnl) VALUES (1, ?, ?)",
+        (account["balance"], account["realizedPnl"]),
+    )
+
+    for position in reversed(payload.get("positions", [])):
+        connection.execute(
+            """
+            INSERT INTO positions (
+                id, strategy_id, symbol, name, side, quantity, entry_price,
+                current_price, leverage, margin, unrealized_pnl,
+                unrealized_pnl_percent, status, opened_at, closed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                position["id"],
+                position.get("strategyId"),
+                position["symbol"],
+                position["name"],
+                position["side"],
+                position["quantity"],
+                position["entryPrice"],
+                position["currentPrice"],
+                position["leverage"],
+                position["margin"],
+                position["unrealizedPnl"],
+                position["unrealizedPnlPercent"],
+                position.get("status", "OPEN"),
+                position["openedAt"],
+                position.get("closedAt"),
+            ),
+        )
+
+    for trade in payload.get("trades", []):
+        connection.execute(
+            """
+            INSERT INTO trades (
+                id, strategy_id, position_id, symbol, side, quantity, price,
+                value, fee, realized_pnl, status, executed_at
+            ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                trade["id"],
+                trade.get("strategyId"),
+                trade["symbol"],
+                trade["side"],
+                trade["quantity"],
+                trade["price"],
+                trade["value"],
+                trade["fee"],
+                trade["realizedPnl"],
+                trade["status"],
+                trade["executedAt"],
+            ),
+        )
+
+
 def initialize_database() -> None:
     with database_connection() as connection:
         connection.executescript(
             """
-            CREATE TABLE IF NOT EXISTS app_state (
+            CREATE TABLE IF NOT EXISTS account (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
-                payload TEXT NOT NULL
+                balance REAL NOT NULL,
+                realized_pnl REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS positions (
+                id TEXT PRIMARY KEY,
+                strategy_id TEXT,
+                symbol TEXT NOT NULL,
+                name TEXT NOT NULL,
+                side TEXT NOT NULL CHECK (side IN ('LONG', 'SHORT')),
+                quantity REAL NOT NULL,
+                entry_price REAL NOT NULL,
+                current_price REAL NOT NULL,
+                leverage REAL NOT NULL,
+                margin REAL NOT NULL,
+                unrealized_pnl REAL NOT NULL,
+                unrealized_pnl_percent REAL NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('OPEN', 'CLOSED')),
+                opened_at TEXT NOT NULL,
+                closed_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS trades (
+                id TEXT PRIMARY KEY,
+                strategy_id TEXT,
+                position_id TEXT REFERENCES positions(id),
+                symbol TEXT NOT NULL,
+                side TEXT NOT NULL CHECK (side IN ('BUY', 'SELL')),
+                quantity REAL NOT NULL,
+                price REAL NOT NULL,
+                value REAL NOT NULL,
+                fee REAL NOT NULL,
+                realized_pnl REAL NOT NULL,
+                status TEXT NOT NULL CHECK (
+                    status IN ('FILLED', 'PENDING', 'CANCELLED')
+                ),
+                executed_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_positions_strategy_status
+                ON positions(strategy_id, status);
+            CREATE INDEX IF NOT EXISTS idx_positions_status
+                ON positions(status);
+            CREATE INDEX IF NOT EXISTS idx_trades_executed_at
+                ON trades(executed_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_trades_strategy
+                ON trades(strategy_id);
             CREATE TABLE IF NOT EXISTS strategies (
                 id TEXT PRIMARY KEY,
                 payload TEXT NOT NULL
@@ -66,13 +194,37 @@ def initialize_database() -> None:
             );
             """
         )
-        connection.execute(
-            """
-            INSERT OR IGNORE INTO app_state (id, payload)
-            VALUES (1, ?)
-            """,
-            (json.dumps(default_portfolio_state()),),
-        )
+
+        connection.execute("BEGIN IMMEDIATE")
+        user_version = connection.execute("PRAGMA user_version").fetchone()[0]
+        if user_version < 1:
+            if _table_exists(connection, "app_state"):
+                legacy_row = connection.execute(
+                    "SELECT payload FROM app_state WHERE id = 1"
+                ).fetchone()
+                if legacy_row is not None:
+                    _import_legacy_portfolio(
+                        connection,
+                        json.loads(legacy_row["payload"]),
+                    )
+                else:
+                    connection.execute(
+                        "INSERT INTO account (id, balance, realized_pnl) "
+                        "VALUES (1, ?, 0)",
+                        (DEFAULT_STARTING_BALANCE,),
+                    )
+                if _table_exists(connection, "app_state_legacy"):
+                    raise RuntimeError("Legacy portfolio backup table already exists.")
+                connection.execute(
+                    "ALTER TABLE app_state RENAME TO app_state_legacy"
+                )
+            else:
+                connection.execute(
+                    "INSERT INTO account (id, balance, realized_pnl) "
+                    "VALUES (1, ?, 0)",
+                    (DEFAULT_STARTING_BALANCE,),
+                )
+            connection.execute("PRAGMA user_version = 1")
 
         if connection.execute("SELECT 1 FROM strategies LIMIT 1").fetchone() is None:
             for strategy in _load_legacy_strategies():
@@ -82,120 +234,3 @@ def initialize_database() -> None:
                         "INSERT OR IGNORE INTO strategies (id, payload) VALUES (?, ?)",
                         (strategy_id, json.dumps(strategy)),
                     )
-
-
-def default_portfolio_state() -> dict:
-    return {
-        "account": {
-            "balance": 100000,
-            "equity": 102847.35,
-            "availableBalance": 85420.18,
-            "usedMargin": 17132.17,
-            "unrealizedPnl": 2847.35,
-            "realizedPnl": 4215.8,
-            "totalPnl": 7063.15,
-        },
-        "positions": [
-            {
-                "id": "pos-001",
-                "strategyId": "strategy-001",
-                "symbol": "BTC/USDT",
-                "name": "Bitcoin",
-                "side": "LONG",
-                "quantity": 0.42,
-                "entryPrice": 65120.5,
-                "currentPrice": 67842.5,
-                "leverage": 3,
-                "margin": 9120.87,
-                "unrealizedPnl": 1143.24,
-                "unrealizedPnlPercent": 29.97,
-                "status": "OPEN",
-                "openedAt": "2026-10-05T08:42:00Z",
-            },
-            {
-                "id": "pos-002",
-                "strategyId": "strategy-002",
-                "symbol": "ETH/USDT",
-                "name": "Ethereum",
-                "side": "LONG",
-                "quantity": 2.8,
-                "entryPrice": 3421.2,
-                "currentPrice": 3524.82,
-                "leverage": 2,
-                "margin": 4789.68,
-                "unrealizedPnl": 290.14,
-                "unrealizedPnlPercent": 12.09,
-                "status": "OPEN",
-                "openedAt": "2026-10-05T12:18:00Z",
-            },
-            {
-                "id": "pos-003",
-                "strategyId": "strategy-003",
-                "symbol": "SOL/USDT",
-                "name": "Solana",
-                "side": "SHORT",
-                "quantity": 18,
-                "entryPrice": 191.4,
-                "currentPrice": 184.62,
-                "leverage": 2,
-                "margin": 1661.58,
-                "unrealizedPnl": 122.04,
-                "unrealizedPnlPercent": 14.69,
-                "status": "OPEN",
-                "openedAt": "2026-10-06T01:25:00Z",
-            },
-        ],
-        "trades": [
-            {
-                "id": "trade-001",
-                "strategyId": "strategy-001",
-                "symbol": "BTC/USDT",
-                "side": "BUY",
-                "quantity": 0.42,
-                "price": 65120.5,
-                "value": 27350.61,
-                "fee": 13.68,
-                "realizedPnl": 0,
-                "status": "FILLED",
-                "executedAt": "2026-10-05T08:42:00Z",
-            },
-            {
-                "id": "trade-002",
-                "strategyId": "strategy-002",
-                "symbol": "ETH/USDT",
-                "side": "BUY",
-                "quantity": 2.8,
-                "price": 3421.2,
-                "value": 9579.36,
-                "fee": 4.79,
-                "realizedPnl": 0,
-                "status": "FILLED",
-                "executedAt": "2026-10-05T12:18:00Z",
-            },
-            {
-                "id": "trade-003",
-                "strategyId": "strategy-003",
-                "symbol": "SOL/USDT",
-                "side": "SELL",
-                "quantity": 18,
-                "price": 191.4,
-                "value": 3445.2,
-                "fee": 1.72,
-                "realizedPnl": 0,
-                "status": "FILLED",
-                "executedAt": "2026-10-06T01:25:00Z",
-            },
-            {
-                "id": "trade-004",
-                "symbol": "BTC/USDT",
-                "side": "SELL",
-                "quantity": 0.18,
-                "price": 64280.4,
-                "value": 11570.47,
-                "fee": 5.79,
-                "realizedPnl": 824.35,
-                "status": "FILLED",
-                "executedAt": "2026-10-04T16:32:00Z",
-            },
-        ],
-    }
