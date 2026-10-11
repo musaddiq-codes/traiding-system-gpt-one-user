@@ -1,303 +1,173 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { useTrading } from "../../context/TradingContext";
-import { backendApiUrl } from "../../lib/api";
 import {
-  isChartRange,
-  mapTimeRangeToInterval,
-  type CandlePoint,
-  type ChartRange,
-} from "../../lib/market-data";
-import { subscribeToKline } from "../../lib/market-data-stream";
-import {
-  evaluateStrategy,
-  StrategySignal,
-} from "../../lib/trading-utils";
+  getEngineStatus,
+  getStrategySignals,
+  subscribeToBackendStream,
+  type EngineStatus,
+  type StrategySignal,
+} from "../../lib/backend";
 
-function getCandleKey(symbol: string, timeframe: string): string {
-  return `${symbol}:${timeframe}`;
-}
-
-interface StrategyEvaluationStatus {
-  strategyId: string;
-  strategyName: string;
-  symbol: string;
-  signal: StrategySignal;
-  reason: string;
-  waitingForCandles: boolean;
+function mergeSignals(
+  current: StrategySignal[],
+  incoming: StrategySignal[],
+): StrategySignal[] {
+  const byCandle = new Map<string, StrategySignal>();
+  for (const signal of [...incoming, ...current]) {
+    byCandle.set(`${signal.strategyId}:${signal.candleTs}`, signal);
+  }
+  return [...byCandle.values()]
+    .sort((left, right) => right.candleTs - left.candleTs)
+    .slice(0, 50);
 }
 
 export default function StrategyEngineStatus() {
-  const {
-    strategies,
-    assets,
-    executeStrategySignal,
-  } = useTrading();
+  const { strategies } = useTrading();
+  const [engine, setEngine] = useState<EngineStatus | null>(null);
+  const [signals, setSignals] = useState<StrategySignal[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
-  const [candlesByStrategyMarket, setCandlesByStrategyMarket] =
-    useState<Record<string, CandlePoint[]>>({});
-
-  useEffect(() => {
-    const activeStrategies = strategies.filter(
-      (strategy) => strategy.status === "ACTIVE"
-    );
-    const uniqueMarkets = new Map<string, { symbol: string; timeframe: string }>();
-
-    for (const strategy of activeStrategies) {
-      const timeframe = strategy.timeframe;
-      const key = getCandleKey(strategy.symbol, timeframe);
-      uniqueMarkets.set(key, {
-        symbol: strategy.symbol,
-        timeframe,
-      });
+  const refresh = useCallback(async () => {
+    try {
+      const active = strategies.filter((strategy) => strategy.status === "ACTIVE");
+      const [status, ...signalLists] = await Promise.all([
+        getEngineStatus(),
+        ...active.map((strategy) => getStrategySignals(strategy.id, 20)),
+      ]);
+      setEngine(status);
+      setSignals((current) =>
+        mergeSignals(current, signalLists.flat()),
+      );
+      setError(null);
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Unable to load engine status from the backend.",
+      );
     }
-
-    const abortController = new AbortController();
-    const unsubscribeFunctions: Array<() => void> = [];
-    let active = true;
-
-    for (const [key, market] of uniqueMarkets) {
-      const timeframe = market.timeframe;
-
-      if (!isChartRange(timeframe)) {
-        continue;
-      }
-      const validTimeframe: ChartRange = timeframe;
-
-      async function loadMarketCandles() {
-        try {
-          const response = await fetch(
-            backendApiUrl(`/api/market?symbol=${encodeURIComponent(market.symbol)}&interval=${encodeURIComponent(mapTimeRangeToInterval(validTimeframe))}&limit=200`),
-            { cache: "no-store", signal: abortController.signal }
-          );
-
-          if (!response.ok) {
-            throw new Error(`Candle history request failed: ${response.status}`);
-          }
-
-          const payload = await response.json();
-
-          if (!Array.isArray(payload.candles) || !active) {
-            return;
-          }
-
-          const history = payload.candles as CandlePoint[];
-          setCandlesByStrategyMarket((current) => ({
-            ...current,
-            [key]: history,
-          }));
-
-          const unsubscribe = subscribeToKline(
-            market.symbol,
-            validTimeframe,
-            (candle) => {
-              setCandlesByStrategyMarket((current) => {
-                const previous = current[key] ?? [];
-                const last = previous[previous.length - 1];
-                const updated = last?.timestamp === candle.timestamp
-                  ? [...previous.slice(0, -1), candle]
-                  : [...previous, candle];
-
-                return {
-                  ...current,
-                  [key]: updated.slice(-200),
-                };
-              });
-            }
-          );
-
-          unsubscribeFunctions.push(unsubscribe);
-        } catch (error) {
-          if (!abortController.signal.aborted) {
-            console.error(`Failed to load strategy candles for ${market.symbol}:`, error);
-          }
-        }
-      }
-
-      void loadMarketCandles();
-    }
-
-    return () => {
-      active = false;
-      abortController.abort();
-      unsubscribeFunctions.forEach((unsubscribe) => unsubscribe());
-    };
   }, [strategies]);
 
-  const evaluations = useMemo<StrategyEvaluationStatus[]>(() => {
-    return strategies
-      .filter(
-        (strategy) =>
-          strategy.status === "ACTIVE"
-      )
-      .map((strategy) => {
-        const asset = assets.find(
-          (item) =>
-            item.symbol === strategy.symbol
-        );
+  useEffect(() => {
+    const initialRefresh = window.setTimeout(() => void refresh(), 0);
+    const timer = window.setInterval(() => void refresh(), 15_000);
+    return () => {
+      window.clearTimeout(initialRefresh);
+      window.clearInterval(timer);
+    };
+  }, [refresh]);
 
-        if (!asset) {
-          return {
-            strategyId: strategy.id,
-            strategyName: strategy.name,
-            symbol: strategy.symbol,
-            signal: "HOLD" as StrategySignal,
-            reason: "Market data unavailable.",
-            waitingForCandles: true,
-          };
+  useEffect(
+    () =>
+      subscribeToBackendStream([], (event) => {
+        if (event.type !== "signal") {
+          return;
         }
-
-        const candleHistory =
-          candlesByStrategyMarket[
-            getCandleKey(strategy.symbol, strategy.timeframe)
-          ];
-
-        if (!candleHistory?.length) {
-          return {
-            strategyId: strategy.id,
-            strategyName: strategy.name,
-            symbol: strategy.symbol,
-            signal: "HOLD" as StrategySignal,
-            reason: "Waiting for historical candles and live stream.",
-            waitingForCandles: true,
-          };
-        }
-
-        const result = evaluateStrategy(
-          strategy,
-          asset,
-          candleHistory
+        setSignals((current) =>
+          mergeSignals(current, [
+            {
+              strategyId: event.strategyId,
+              symbol: event.symbol,
+              candleTs: event.candleTs,
+              signal: event.signal,
+              reason: event.reason,
+              score: event.score,
+              actionTaken: event.actionTaken,
+            },
+          ]),
         );
+      }),
+    [],
+  );
 
-        return {
-          ...result,
-          strategyName: strategy.name,
-          waitingForCandles: false,
-        };
-      });
-  }, [strategies, assets, candlesByStrategyMarket]);
+  const activeStrategies = strategies.filter(
+    (strategy) => strategy.status === "ACTIVE",
+  );
+  const running = engine?.enabled === true && engine.running;
 
   return (
     <section className="trading-panel mb-6 overflow-hidden">
       <div className="border-b border-zinc-800 px-5 py-4">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-4">
           <div>
             <div className="flex items-center gap-3">
-              <h2 className="font-medium text-white">
-                Strategy Engine
-              </h2>
-
-              <span className="flex items-center gap-2 text-xs text-emerald-400">
-                <span className="live-dot" />
-                {evaluations.some((item) => item.waitingForCandles)
-                  ? "Loading candle data"
-                  : "Running"}
+              <h2 className="font-medium text-white">Strategy Engine</h2>
+              <span
+                className={`flex items-center gap-2 text-xs ${
+                  running ? "text-emerald-400" : "text-zinc-500"
+                }`}
+              >
+                <span className={running ? "live-dot" : "h-2 w-2 rounded-full bg-zinc-600"} />
+                Engine {running ? "ON" : "OFF"}
               </span>
             </div>
-
             <p className="mt-1 text-xs text-zinc-500">
-              Evaluating active strategies against live candles
+              Server-side paper strategy execution
+              {engine ? ` · ${engine.tickSeconds}s tick` : ""}
             </p>
           </div>
-
           <div className="text-right">
             <div className="number text-lg font-semibold text-white">
-              {evaluations.length}
+              {activeStrategies.length}
             </div>
-
-            <div className="text-[10px] text-zinc-600">
-              Active
-            </div>
+            <div className="text-[10px] text-zinc-600">Active strategies</div>
           </div>
         </div>
+        {error && (
+          <p className="mt-3 text-xs text-red-400" role="alert">
+            {error}
+          </p>
+        )}
       </div>
 
-      {evaluations.length === 0 ? (
-        <div className="px-5 py-10 text-center">
-          <div className="text-sm text-zinc-400">
-            No active strategies
-          </div>
-
-          <div className="mt-1 text-xs text-zinc-600">
-            Activate a strategy to begin evaluation.
-          </div>
+      {activeStrategies.length === 0 ? (
+        <div className="px-5 py-10 text-center text-sm text-zinc-500">
+          No active strategies
+        </div>
+      ) : signals.length === 0 ? (
+        <div className="px-5 py-10 text-center text-sm text-zinc-500">
+          No strategy signals recorded yet.
         </div>
       ) : (
         <div className="divide-y divide-zinc-900">
-          {evaluations.map((evaluation) => {
+          {signals.slice(0, 10).map((signal) => {
+            const strategy = strategies.find(
+              (item) => item.id === signal.strategyId,
+            );
             const signalClass =
-              evaluation.signal === "BUY"
-                ? "border-emerald-900 bg-emerald-950/30 text-emerald-400"
-                : evaluation.signal === "SELL"
-                  ? "border-red-900 bg-red-950/30 text-red-400"
-                  : "border-zinc-700 bg-zinc-900 text-zinc-400";
-
-            const canExecute =
-              evaluation.signal === "BUY" ||
-              evaluation.signal === "SELL";
-
+              signal.signal === "BUY"
+                ? "text-emerald-400"
+                : signal.signal === "SELL"
+                  ? "text-red-400"
+                  : "text-zinc-400";
             return (
               <div
-                key={evaluation.strategyId}
-                className="flex flex-col gap-4 px-5 py-4 md:flex-row md:items-center md:justify-between"
+                key={`${signal.strategyId}:${signal.candleTs}`}
+                className="flex flex-col gap-2 px-5 py-4 sm:flex-row sm:items-start sm:justify-between"
               >
-                <div className="min-w-0">
+                <div>
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-medium text-white">
-                      {evaluation.strategyName}
+                      {strategy?.name ?? signal.strategyId}
                     </span>
-
-                    <span className="text-xs text-zinc-600">
-                      {evaluation.symbol}
+                    <span className="text-xs text-zinc-600">{signal.symbol}</span>
+                    <span className={`text-xs font-semibold ${signalClass}`}>
+                      {signal.signal}
                     </span>
                   </div>
-
-                  <p className="mt-1 text-xs text-zinc-500">
-                    {evaluation.waitingForCandles
-                      ? "Waiting for historical candles and live stream..."
-                      : evaluation.reason}
-                  </p>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  {/* Signal indicator */}
-                  <span
-                    className={`rounded-md border px-3 py-1.5 text-xs font-semibold ${signalClass}`}
-                  >
-                    {evaluation.signal}
-                  </span>
-
-                  {/* Execution button */}
-                  {canExecute && !evaluation.waitingForCandles && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        console.log(
-                          "Executing strategy:",
-                          evaluation.strategyId
-                        );
-
-                        executeStrategySignal(
-                          evaluation.strategyId,
-                          candlesByStrategyMarket[
-                            getCandleKey(
-                              evaluation.symbol,
-                              strategies.find((strategy) => strategy.id === evaluation.strategyId)?.timeframe ?? ""
-                            )
-                          ]
-                        );
-                      }}
-                      className={`cursor-pointer rounded-md border px-4 py-1.5 text-xs font-semibold transition ${evaluation.signal === "BUY"
-                          ? "border-emerald-800 bg-emerald-950/40 text-emerald-400 hover:bg-emerald-900/60"
-                          : "border-red-800 bg-red-950/40 text-red-400 hover:bg-red-900/60"
-                        }`}
-                    >
-                      Execute
-                    </button>
+                  <p className="mt-1 text-xs text-zinc-400">{signal.reason}</p>
+                  {signal.actionTaken && (
+                    <p className="mt-1 text-[10px] text-zinc-600">
+                      Action: {signal.actionTaken}
+                    </p>
                   )}
                 </div>
+                <time className="shrink-0 text-[10px] text-zinc-600">
+                  {new Date(signal.candleTs).toLocaleString()}
+                </time>
               </div>
             );
           })}

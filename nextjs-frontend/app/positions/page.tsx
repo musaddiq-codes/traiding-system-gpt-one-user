@@ -7,9 +7,6 @@ import Header from "../components/navigation/Header";
 import { useTrading } from "../context/TradingContext";
 import type { Position } from "../lib/trading-types";
 import {
-  calculatePositionPnl,
-  calculatePositionPnlPercent,
-  calculatePositionValue,
   formatCurrency,
   formatNumber,
 } from "../lib/trading-utils";
@@ -22,14 +19,12 @@ export default function PositionsPage() {
   } = useTrading();
 
   const totalExposure = positions.reduce(
-    (total, position) =>
-      total + calculatePositionValue(position),
+    (total, position) => total + position.margin,
     0
   );
 
   const totalPnl = positions.reduce(
-    (total, position) =>
-      total + calculatePositionPnl(position),
+    (total, position) => total + position.unrealizedPnl,
     0
   );
 
@@ -116,20 +111,12 @@ export default function PositionsPage() {
 
                 <tbody className="divide-y divide-[#151c26]">
                   {positions.map((position) => {
-                    const pnl =
-                      calculatePositionPnl(position);
-
-                    const pnlPercent =
-                      calculatePositionPnlPercent(
-                        position
-                      );
-
                     return (
                       <PositionRow
                         key={position.id}
                         position={position}
-                        pnl={pnl}
-                        pnlPercent={pnlPercent}
+                        pnl={position.unrealizedPnl}
+                        pnlPercent={position.unrealizedPnlPercent}
                       />
                     );
                   })}
@@ -141,9 +128,9 @@ export default function PositionsPage() {
           <div className="mt-5 text-right text-[10px] text-slate-700">
             Available balance:{" "}
             <span className="number text-slate-500">
-              {formatCurrency(
-                account.availableBalance
-              )}
+            {account
+              ? formatCurrency(account.availableBalance)
+              : "Unavailable"}
             </span>
           </div>
         </main>
@@ -195,9 +182,7 @@ function PositionRow({
       </td>
 
       <td className="number px-5 py-4 text-slate-300">
-        {formatCurrency(
-          calculatePositionValue(position)
-        )}
+        {formatCurrency(position.margin)}
       </td>
 
       <td className="px-5 py-4">

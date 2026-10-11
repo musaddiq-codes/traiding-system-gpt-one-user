@@ -63,6 +63,16 @@ class BacktestRecordPayload(BaseModel):
     result: dict
 
 
+class BacktestRunPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    strategyId: Any = None
+    days: Any = None
+    initialBalance: Any = None
+    feeBps: Any = None
+    slippageBps: Any = None
+
+
 class BacktestReviewPayload(BaseModel):
     runId: str = Field(min_length=1, max_length=100)
     confirmPaperApproval: Literal[True]

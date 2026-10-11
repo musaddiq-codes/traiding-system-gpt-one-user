@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import Sidebar from "../../components/navigation/Sidebar";
 import Header from "../../components/navigation/Header";
 import type { Strategy } from "../../lib/trading-types";
+import type { PluginManifest } from "../../lib/backend";
 
 export default async function StrategyPage({
   params,
@@ -25,6 +26,19 @@ export default async function StrategyPage({
   }
   const payload = await response.json() as { strategy: Strategy };
   const strategy = payload.strategy;
+  let pluginName: string | undefined;
+  if (strategy.algorithmId) {
+    const pluginsResponse = await fetch(`${backendUrl}/api/plugins`, {
+      cache: "no-store",
+    });
+    if (!pluginsResponse.ok) {
+      throw new Error(`Unable to load strategy plugins (${pluginsResponse.status}).`);
+    }
+    const plugins = await pluginsResponse.json() as PluginManifest[];
+    pluginName = plugins.find(
+      (plugin) => plugin.id === strategy.algorithmId,
+    )?.name ?? strategy.algorithmId;
+  }
 
   return (
     <div className="min-h-screen bg-[#07090d] text-white">
@@ -79,8 +93,14 @@ export default async function StrategyPage({
                 <div className="grid gap-5 p-5 sm:grid-cols-2">
                   <Field label="Trading Pair" value={strategy.symbol} />
                   <Field label="Timeframe" value={strategy.timeframe} />
-                  <Field label="Entry Condition" value={strategy.entryCondition} />
-                  <Field label="Exit Condition" value={strategy.exitCondition} />
+                  {strategy.algorithmId ? (
+                    <Field label="Strategy Logic" value={pluginName ?? strategy.algorithmId} />
+                  ) : (
+                    <>
+                      <Field label="Entry Condition" value={strategy.entryCondition ?? ""} />
+                      <Field label="Exit Condition" value={strategy.exitCondition ?? ""} />
+                    </>
+                  )}
                   <Field label="Risk / Trade" value={`${strategy.riskPerTrade}%`} />
                   <Field label="Position Size" value={strategy.positionSize.toLocaleString()} />
                   <Field label="Stop Loss" value={`${strategy.stopLoss}%`} />
@@ -99,67 +119,31 @@ export default async function StrategyPage({
                   </p>
                 </div>
 
-                <div className="p-5">
-                  <div className="rounded-xl border border-[#1b2330] bg-[#080b10] p-4 font-mono text-[11px] leading-7 text-slate-500">
-                    <div>
-                      <span className="text-purple-400">IF</span>{" "}
-                      RSI &lt; 30
-                    </div>
-
-                    <div>
-                      <span className="text-purple-400">AND</span>{" "}
-                      MACD crosses above signal
-                    </div>
-
-                    <div>
-                      <span className="text-purple-400">AND</span>{" "}
-                      confidence &gt; 72%
-                    </div>
-
-                    <div className="mt-2 text-emerald-400">
-                      → EXECUTE BUY
-                    </div>
-
-                    <div className="mt-2">
-                      <span className="text-purple-400">IF</span>{" "}
-                      RSI &gt; 70
-                    </div>
-
-                    <div>
-                      <span className="text-purple-400">OR</span>{" "}
-                      stop_loss triggered
-                    </div>
-
-                    <div className="mt-2 text-red-400">
-                      → EXECUTE SELL
-                    </div>
-                  </div>
+                <div className="space-y-2 p-5 text-xs text-slate-400">
+                  {strategy.algorithmId ? (
+                    <>
+                      <p>{pluginName ?? strategy.algorithmId}</p>
+                      {Object.entries(strategy.params ?? {}).map(([key, value]) => (
+                        <div key={key} className="flex justify-between gap-4">
+                          <span>{key}</span>
+                          <span className="text-slate-200">{String(value)}</span>
+                        </div>
+                      ))}
+                    </>
+                  ) : (
+                    <>
+                      <p>Entry: {strategy.entryCondition}</p>
+                      <p>Exit: {strategy.exitCondition}</p>
+                      <p className="text-[10px] text-slate-600">
+                        Only one comparison is evaluated; and/or are not supported.
+                      </p>
+                    </>
+                  )}
                 </div>
               </section>
             </div>
 
             <aside className="space-y-6">
-              <section className="trading-panel p-5">
-                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-600">
-                  Performance
-                </div>
-
-                <div className="number mt-3 text-3xl font-bold text-emerald-400">
-                  +18.42%
-                </div>
-
-                <div className="mt-1 text-xs text-slate-600">
-                  Total return
-                </div>
-
-                <div className="mt-5 grid grid-cols-2 gap-3">
-                  <Stat label="Win Rate" value="76.1%" />
-                  <Stat label="Trades" value="142" />
-                  <Stat label="Profit Factor" value="2.18" />
-                  <Stat label="Max DD" value="4.72%" />
-                </div>
-              </section>
-
               <section className="trading-panel p-5">
                 <div className="text-sm font-semibold">
                   Strategy Status
@@ -208,23 +192,6 @@ function Field({
         defaultValue={value}
         className="w-full rounded-lg border border-[#1b2330] bg-[#090c11] px-3.5 py-3 text-xs text-slate-300 outline-none transition focus:border-blue-500/50"
       />
-    </div>
-  );
-}
-
-function Stat({
-  label,
-  value,
-}: {
-  label: string;
-  value: string;
-}) {
-  return (
-    <div className="rounded-lg bg-[#090c11] p-3">
-      <div className="text-[9px] text-slate-700">{label}</div>
-      <div className="number mt-1 text-xs font-semibold">
-        {value}
-      </div>
     </div>
   );
 }

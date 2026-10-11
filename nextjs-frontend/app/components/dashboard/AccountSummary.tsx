@@ -9,7 +9,17 @@ import {
 import { useTrading } from "../../context/TradingContext";
 
 export default function AccountSummary() {
-  const { account } = useTrading();
+  const { account, dataStatus, backendError } = useTrading();
+
+  if (!account) {
+    return (
+      <section className="trading-panel p-6 text-sm text-zinc-400">
+        {dataStatus === "loading"
+          ? "Loading account data..."
+          : backendError ?? "Backend unavailable. Account data could not be loaded."}
+      </section>
+    );
+  }
 
   const totalPnlPercent =
     account.balance !== 0

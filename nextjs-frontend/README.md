@@ -64,10 +64,12 @@ Open `http://localhost:3000`. The API health check is available at
 
 On first startup, existing `data/strategies.json` strategies are copied into
 SQLite if the strategy table is empty. Paper positions, trades, strategies, and
-backtest review records are then managed by FastAPI. The interactive Next.js
-pages remain in the frontend; the strategy detail page reads its strategy
-record from FastAPI. Backtest computation remains in the existing Next.js
-route, while backtest records and paper-approval checks are stored by FastAPI.
+backtest review records are then managed by FastAPI. The Next.js frontend is a
+display client: strategy execution, market streaming, portfolio valuation,
+stop-loss/take-profit enforcement, and backtests run in the backend. The
+strategy engine is disabled by default and can be enabled with
+`ENGINE_ENABLED=true`. `ENGINE_TICK_SECONDS` controls its tick interval
+(default `15`), and `PAPER_FEE_BPS` sets paper-trade fees (default `0`).
 
 ## Tests
 
@@ -76,3 +78,18 @@ Run the backend tests from the `backend` directory:
 ```powershell
 python -m unittest discover -s tests
 ```
+
+Run frontend checks from `nextjs-frontend`:
+
+```powershell
+pnpm exec tsc --noEmit
+pnpm lint
+pnpm build
+```
+
+To exercise a strategy manually, create one using the **DCA Score Strategy**
+plugin, run `POST /api/backtests/run` with its `strategyId`, approve the
+result for paper trading, then restart the backend with `ENGINE_ENABLED=true`.
+Call `POST /api/engine/tick?dry_run=true`, inspect
+`GET /api/strategies/{id}/signals`, and connect to `/ws/stream` for live signal
+events. Dry-run ticks record decisions without placing paper orders.

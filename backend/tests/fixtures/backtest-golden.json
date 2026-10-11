@@ -1,0 +1,18 @@
+{
+  "source": "Original nextjs-frontend/app/api/backtest/route.ts executed with Node 24.21.0",
+  "scenario": "text-rules RSI entry, one LONG position closed at end of test",
+  "netProfit": 8,
+  "trades": [
+    {
+      "direction": "LONG",
+      "entryTimestamp": "2026-01-01T00:01:00Z",
+      "entryPrice": 100,
+      "exitPrice": 104,
+      "pnl": 8,
+      "entryFee": 0,
+      "exitFee": 0,
+      "exitReason": "END_OF_TEST",
+      "timestamp": "2026-01-01T00:03:00Z"
+    }
+  ]
+}

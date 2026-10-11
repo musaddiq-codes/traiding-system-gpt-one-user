@@ -8,10 +8,12 @@ import { useTrading } from "../context/TradingContext";
 import type { Strategy } from "../lib/trading-types";
 import type { BacktestResult } from "../lib/backtest-types";
 import { backendApiUrl } from "../lib/api";
+import { getPlugins, runBacktest, type PluginManifest } from "../lib/backend";
 
 export default function BacktestPage() {
   const { approveStrategyForPaper } = useTrading();
   const [strategies, setStrategies] = useState<Strategy[]>([]);
+  const [plugins, setPlugins] = useState<PluginManifest[]>([]);
   const [selectedId, setSelectedId] = useState<string>("");
   const [days, setDays] = useState(30);
   const [feeBps, setFeeBps] = useState(10);
@@ -27,7 +29,10 @@ export default function BacktestPage() {
   useEffect(() => {
     async function loadStrategies() {
       try {
-        const response = await fetch(backendApiUrl("/api/strategies"));
+        const [response] = await Promise.all([
+          fetch(backendApiUrl("/api/strategies")),
+          getPlugins().then(setPlugins),
+        ]);
         if (!response.ok) {
           throw new Error(`Backend strategy request failed (${response.status}).`);
         }
@@ -77,28 +82,14 @@ export default function BacktestPage() {
     setError("");
 
     try {
-      const response = await fetch("/api/backtest", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          strategy: selectedStrategy,
-          symbol: selectedStrategy.symbol,
-          days,
-          initialBalance: 100000,
-          feeBps,
-          slippageBps,
-        }),
+      const result = await runBacktest({
+        strategyId: selectedStrategy.id,
+        days,
+        initialBalance: 100000,
+        feeBps,
+        slippageBps,
       });
-
-      const payload = await response.json();
-
-      if (!response.ok) {
-        throw new Error(payload.error ?? "Backtest failed.");
-      }
-
-      setResults(payload);
+      setResults(result);
       setConfirmApproval(false);
       setReviewNotes("");
       setReviewMessage("");
@@ -260,12 +251,25 @@ export default function BacktestPage() {
                   </div>
 
                   <div className="space-y-1 leading-6">
-                    <div>
-                      <span className="text-blue-400">Entry:</span> {selectedStrategy.entryCondition}
-                    </div>
-                    <div>
-                      <span className="text-red-400">Exit:</span> {selectedStrategy.exitCondition}
-                    </div>
+                    {selectedStrategy.algorithmId ? (
+                      <div>
+                        Strategy logic:{" "}
+                        {plugins.find(
+                          (plugin) => plugin.id === selectedStrategy.algorithmId,
+                        )?.name ?? selectedStrategy.algorithmId}
+                      </div>
+                    ) : (
+                      <>
+                        <div>
+                          <span className="text-blue-400">Entry:</span>{" "}
+                          {selectedStrategy.entryCondition}
+                        </div>
+                        <div>
+                          <span className="text-red-400">Exit:</span>{" "}
+                          {selectedStrategy.exitCondition}
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
               )}

@@ -4,7 +4,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Literal
 from uuid import uuid4
 
-from app.market.data import interval_milliseconds, normalize_symbol
+from app.market.data import interval_milliseconds
 from app.risk.backtest_policy import evaluate_eligibility
 from app.strategies.base import PluginContext, PluginPosition
 from app.strategies.registry import DEFAULT_PLUGIN_ID, get_plugin, resolve_params
@@ -27,6 +27,8 @@ class OpenPosition:
 
 
 def _to_fixed_number(value: float, digits: int = 2) -> float:
+    if abs(value) >= 1e21:
+        return value
     rounded = Decimal.from_float(abs(value)).quantize(
         Decimal(1).scaleb(-digits),
         rounding=ROUND_HALF_UP,
@@ -210,7 +212,11 @@ def run_backtest(
             raise ValueError("Strategy plugin returned an invalid signal.")
         if not isinstance(decision.reason, str):
             raise ValueError("Strategy plugin returned an invalid decision.")
-        if not math.isfinite(float(decision.score)):
+        if (
+            not isinstance(decision.score, (int, float))
+            or isinstance(decision.score, bool)
+            or not math.isfinite(decision.score)
+        ):
             raise ValueError("Strategy plugin returned an invalid score.")
         return decision
 

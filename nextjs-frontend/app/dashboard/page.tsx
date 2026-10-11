@@ -188,15 +188,15 @@ export default function DashboardPage() {
                   </span>
 
                   <span className="number text-slate-400">
-                    {formatCurrency(
-                      account.availableBalance
-                    )}
+                    {account
+                      ? formatCurrency(account.availableBalance)
+                      : "Unavailable"}
                   </span>
                 </div>
 
                 <button
                   onClick={handleTrade}
-                  disabled={!amount || Number(amount) <= 0}
+                  disabled={!account || !amount || Number(amount) <= 0}
                   className={`w-full rounded-lg py-3 text-xs font-bold transition disabled:cursor-not-allowed disabled:opacity-40 ${
                     side === "LONG"
                       ? "bg-emerald-500 text-[#041008] hover:bg-emerald-400"

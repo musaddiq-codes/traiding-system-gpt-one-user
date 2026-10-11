@@ -1,8 +1,9 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 
 import { useTrading } from "../../context/TradingContext";
+import { getPlugins, type PluginManifest } from "../../lib/backend";
 import type {
   Strategy,
   StrategyType,
@@ -66,6 +67,15 @@ export default function StrategyForm({
       initialStrategy?.description ?? ""
     );
 
+  const [algorithmId, setAlgorithmId] = useState(
+    initialStrategy?.algorithmId ?? "text-rules",
+  );
+  const [params, setParams] = useState<Record<string, unknown>>(
+    initialStrategy?.params ?? {},
+  );
+  const [plugins, setPlugins] = useState<PluginManifest[]>([]);
+  const [pluginError, setPluginError] = useState("");
+
   const [entryCondition, setEntryCondition] =
     useState(
       initialStrategy?.entryCondition ?? ""
@@ -126,6 +136,21 @@ export default function StrategyForm({
   const [isSubmitting, setIsSubmitting] =
     useState(false);
 
+  useEffect(() => {
+    getPlugins()
+      .then(setPlugins)
+      .catch((cause: unknown) => {
+        setPluginError(
+          cause instanceof Error
+            ? cause.message
+            : "Unable to load strategy plugins.",
+        );
+      });
+  }, []);
+
+  const selectedPlugin = plugins.find((plugin) => plugin.id === algorithmId);
+  const usesTextRules = algorithmId === "text-rules";
+
   const validate = () => {
     const parsedStopLoss =
       Number(stopLoss);
@@ -150,12 +175,16 @@ export default function StrategyForm({
       return "Please select a trading pair.";
     }
 
-    if (!entryCondition.trim()) {
+    if (usesTextRules && !entryCondition.trim()) {
       return "Entry condition is required.";
     }
 
-    if (!exitCondition.trim()) {
+    if (usesTextRules && !exitCondition.trim()) {
       return "Exit condition is required.";
+    }
+
+    if (!selectedPlugin) {
+      return "Select a strategy logic plugin loaded from the backend.";
     }
 
     if (
@@ -227,7 +256,7 @@ export default function StrategyForm({
     const strategy: Strategy = {
       id:
         initialStrategy?.id ??
-        `strategy-${Date.now()}`,
+        `strategy-${crypto.randomUUID()}`,
 
       name: name.trim(),
 
@@ -242,11 +271,22 @@ export default function StrategyForm({
 
       status,
 
-      entryCondition:
-        entryCondition.trim(),
+      entryCondition: usesTextRules
+        ? entryCondition.trim()
+        : undefined,
 
-      exitCondition:
-        exitCondition.trim(),
+      exitCondition: usesTextRules
+        ? exitCondition.trim()
+        : undefined,
+
+      algorithmId,
+
+      params: Object.fromEntries(
+        (selectedPlugin?.params ?? []).map((parameter) => [
+          parameter.key,
+          params[parameter.key] ?? parameter.default,
+        ]),
+      ),
 
       stopLoss:
         Number(stopLoss),
@@ -441,6 +481,38 @@ export default function StrategyForm({
         <div className="space-y-5">
           <div>
             <label className="mb-2 block text-xs text-zinc-500">
+              Strategy Logic
+            </label>
+            <select
+              value={algorithmId}
+              onChange={(event) => {
+                setAlgorithmId(event.target.value);
+                setParams({});
+              }}
+              className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm text-white outline-none focus:border-zinc-600"
+            >
+              {plugins.map((plugin) => (
+                <option key={plugin.id} value={plugin.id}>
+                  {plugin.id === "text-rules"
+                    ? "Custom text rules"
+                    : plugin.name}
+                </option>
+              ))}
+            </select>
+            {pluginError && (
+              <p className="mt-2 text-xs text-red-400" role="alert">
+                {pluginError}
+              </p>
+            )}
+          </div>
+
+          {usesTextRules ? (
+            <>
+              <p className="text-xs text-zinc-500">
+                Only one comparison is evaluated; and/or are not supported.
+              </p>
+          <div>
+            <label className="mb-2 block text-xs text-zinc-500">
               Entry Condition
             </label>
 
@@ -452,7 +524,7 @@ export default function StrategyForm({
                 )
               }
               rows={4}
-              placeholder="Example: EMA 9 crosses above EMA 21 and RSI is above 55."
+              placeholder="RSI < 30"
               className="w-full resize-none rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm text-white outline-none placeholder:text-zinc-700 focus:border-zinc-600"
             />
           </div>
@@ -470,10 +542,67 @@ export default function StrategyForm({
                 )
               }
               rows={4}
-              placeholder="Example: EMA 9 crosses below EMA 21."
+              placeholder="ema9 > ema21"
               className="w-full resize-none rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm text-white outline-none placeholder:text-zinc-700 focus:border-zinc-600"
             />
           </div>
+            </>
+          ) : (
+            selectedPlugin?.params.map((parameter) => {
+              const value = params[parameter.key] ?? parameter.default;
+              return (
+                <div key={parameter.key}>
+                  <label className="mb-2 block text-xs text-zinc-500">
+                    {parameter.label}
+                  </label>
+                  {parameter.type === "boolean" ? (
+                    <input
+                      type="checkbox"
+                      checked={Boolean(value)}
+                      onChange={(event) =>
+                        setParams((current) => ({
+                          ...current,
+                          [parameter.key]: event.target.checked,
+                        }))
+                      }
+                      className="h-4 w-4 accent-blue-500"
+                    />
+                  ) : parameter.type === "select" ? (
+                    <select
+                      value={String(value)}
+                      onChange={(event) =>
+                        setParams((current) => ({
+                          ...current,
+                          [parameter.key]: event.target.value,
+                        }))
+                      }
+                      className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm text-white outline-none focus:border-zinc-600"
+                    >
+                      {parameter.options.map((option) => (
+                        <option key={option} value={option}>
+                          {option}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type="number"
+                      value={String(value)}
+                      min={parameter.min ?? undefined}
+                      max={parameter.max ?? undefined}
+                      onChange={(event) =>
+                        setParams((current) => ({
+                          ...current,
+                          [parameter.key]: Number(event.target.value),
+                        }))
+                      }
+                      className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm text-white outline-none focus:border-zinc-600"
+                    />
+                  )}
+                </div>
+              );
+            })
+          )}
         </div>
       </section>
 

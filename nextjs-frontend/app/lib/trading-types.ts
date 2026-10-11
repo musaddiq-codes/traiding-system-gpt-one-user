@@ -66,8 +66,10 @@ export interface Strategy {
   timeframe: string;
   status: StrategyStatus;
 
-  entryCondition: string;
-  exitCondition: string;
+  entryCondition?: string;
+  exitCondition?: string;
+  algorithmId?: string;
+  params?: Record<string, unknown>;
 
   stopLoss: number;
   takeProfit: number;
@@ -93,7 +95,7 @@ export interface Account {
 }
 
 export interface TradingState {
-  account: Account;
+  account: Account | null;
   assets: Asset[];
   positions: Position[];
   trades: Trade[];

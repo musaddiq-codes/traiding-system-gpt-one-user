@@ -13,8 +13,8 @@ import { useEffect, useRef, useState } from "react";
 
 import { useTrading } from "../../context/TradingContext";
 import type { CandlePoint, ChartRange } from "../../lib/market-data";
+import { subscribeToBackendStream } from "../../lib/backend";
 import { backendApiUrl } from "../../lib/api";
-import { subscribeToKline } from "../../lib/market-data-stream";
 import { formatCurrency } from "../../lib/trading-utils";
 
 const TIME_RANGES: {
@@ -173,10 +173,13 @@ export default function TradingChart() {
         );
         chartRef.current?.timeScale().fitContent();
 
-        unsubscribe = subscribeToKline(
-          selectedSymbol,
-          timeRange,
-          (candle) => {
+        unsubscribe = subscribeToBackendStream(
+          [{ type: "kline", symbol: selectedSymbol, interval: timeRange }],
+          (event) => {
+            if (event.type !== "kline" || event.interval !== timeRange) {
+              return;
+            }
+            const candle = event.candle;
             candleSeriesRef.current?.update({
               time: Math.floor(candle.timestamp / 1000) as UTCTimestamp,
               open: candle.open,

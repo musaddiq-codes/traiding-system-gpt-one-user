@@ -1,11 +1,20 @@
+import asyncio
 import json
+import math
 from datetime import datetime, timezone
 
+import httpx
 from fastapi import APIRouter, HTTPException
 
-from app.api.routes.schemas import BacktestRecordPayload, BacktestReviewPayload
+from app.backtest.engine import run_backtest
+from app.api.routes.schemas import (
+    BacktestRecordPayload,
+    BacktestReviewPayload,
+    BacktestRunPayload,
+)
 from app.api.routes.strategies import _load_strategy, _save_strategy
 from app.database.database import database_connection
+from app.market.data import CHART_RANGES, fetch_historical_candles, normalize_symbol
 from app.risk.backtest_policy import evaluate_eligibility, validate_result_shape
 from app.trading.engine import get_strategy_signature, get_strategy_snapshot
 
@@ -32,10 +41,7 @@ def _read_run(run_id: str) -> dict | None:
     return run
 
 
-@router.post("/runs")
-def save_run(payload: BacktestRecordPayload) -> dict:
-    strategy = payload.strategy.model_dump(exclude_none=True)
-    result = payload.result
+def save_backtest_run(strategy: dict, result: dict) -> dict:
     try:
         validate_result_shape(result)
     except ValueError as exc:
@@ -85,6 +91,143 @@ def save_run(payload: BacktestRecordPayload) -> dict:
             """
         )
     return run
+
+
+@router.post("/runs")
+def save_run(payload: BacktestRecordPayload) -> dict:
+    strategy = payload.strategy.model_dump(exclude_none=True)
+    return save_backtest_run(strategy, payload.result)
+
+
+def _finite_number(value: object) -> bool:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
+
+
+@router.post("/run")
+async def run_backtest_route(payload: BacktestRunPayload) -> dict:
+    strategy_id = payload.strategyId
+    if not isinstance(strategy_id, str) or not strategy_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Strategy and symbol are required.",
+        )
+    strategy = _load_strategy(strategy_id)
+    if strategy is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Save the current strategy version before running its backtest.",
+        )
+
+    days = 30 if payload.days is None else payload.days
+    initial_balance = (
+        100_000 if payload.initialBalance is None else payload.initialBalance
+    )
+    fee_bps = 10 if payload.feeBps is None else payload.feeBps
+    slippage_bps = 5 if payload.slippageBps is None else payload.slippageBps
+    if (
+        isinstance(days, bool)
+        or not isinstance(days, int)
+        or days < 1
+        or days > 180
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Lookback days must be an integer between 1 and 180.",
+        )
+    if not _finite_number(initial_balance) or initial_balance <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Initial balance must be greater than zero.",
+        )
+    if not _finite_number(fee_bps) or fee_bps < 0 or fee_bps > 1_000:
+        raise HTTPException(
+            status_code=400,
+            detail="Fee must be between 0 and 1,000 basis points.",
+        )
+    if (
+        not _finite_number(slippage_bps)
+        or slippage_bps < 0
+        or slippage_bps > 1_000
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Slippage must be between 0 and 1,000 basis points.",
+        )
+
+    timeframe = strategy.get("timeframe")
+    if timeframe not in CHART_RANGES:
+        raise HTTPException(
+            status_code=400,
+            detail="The strategy timeframe is not supported for backtesting.",
+        )
+    try:
+        normalize_symbol(strategy["symbol"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise HTTPException(
+            status_code=400,
+            detail="Backtest market must match the saved strategy market.",
+        ) from error
+    metrics = (
+        strategy.get("stopLoss"),
+        strategy.get("takeProfit"),
+        strategy.get("positionSize"),
+        strategy.get("riskPerTrade"),
+    )
+    if (
+        not all(_finite_number(value) for value in metrics)
+        or strategy["stopLoss"] <= 0
+        or strategy["takeProfit"] <= 0
+        or strategy["positionSize"] <= 0
+        or strategy["riskPerTrade"] <= 0
+        or strategy["riskPerTrade"] > 100
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Strategy risk, stop-loss, take-profit, and position-size "
+                "settings must be valid."
+            ),
+        )
+
+    try:
+        candles = await fetch_historical_candles(
+            strategy["symbol"],
+            timeframe,
+            days,
+        )
+    except httpx.HTTPError as error:
+        raise HTTPException(
+            status_code=502,
+            detail="Live market or candle data is currently unavailable.",
+        ) from error
+    except ValueError as error:
+        if str(error).startswith("This timeframe and lookback require"):
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        raise HTTPException(
+            status_code=502,
+            detail="Live market or candle data is currently unavailable.",
+        ) from error
+
+    if len(candles) < 3:
+        raise HTTPException(
+            status_code=422,
+            detail="Not enough historical candles are available for this backtest.",
+        )
+    result = await asyncio.to_thread(
+        run_backtest,
+        strategy,
+        candles,
+        initial_balance=float(initial_balance),
+        fee_bps=float(fee_bps),
+        slippage_bps=float(slippage_bps),
+    )
+    save_backtest_run(strategy, result)
+    return result
 
 
 @router.get("/runs/{run_id}")
